@@ -25,18 +25,17 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import re
 import uuid
 from pathlib import Path
 
 from stdiag import coresoftware_expert, tracking_expert
+from stdiag.json_block import final_json_block
 
 MAX_TURNS_PER_SIDE = 3
 AGENTS = ("coresoftware", "tracking")
 NAMES = {"coresoftware": "coresoftware expert",
          "tracking": "tracking expert (ACTS + Millepede-II)"}
 STATUSES = {"continue", "converged", "needs_human"}
-STATUS_BLOCK = re.compile(r"```json\s*(\{.*\})\s*```\s*$", re.DOTALL)
 
 # Replaceable in tests; each takes (text, session_id, resume, repo, model,
 # effort) and returns the agent's reply.
@@ -54,18 +53,12 @@ def other(agent: str) -> str:
 
 def parse_reply(reply: str) -> tuple[str, dict, bool]:
     """Split a reply into its Markdown body and validated status block."""
-    match = STATUS_BLOCK.search(reply)
-    control = None
-    if match:
-        try:
-            control = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            control = None
-    if not isinstance(control, dict) or control.get("status") not in STATUSES:
+    start, control = final_json_block(reply)
+    if control is None or control.get("status") not in STATUSES:
         return reply, {"status": "continue", "message_to_other": reply,
                        "question_for_human": "",
                        "summary": "(no valid status block)"}, False
-    body = reply[:match.start()].rstrip()
+    body = reply[:start].rstrip()
     control.setdefault("message_to_other", "")
     control.setdefault("question_for_human", "")
     control.setdefault("summary", "")

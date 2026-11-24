@@ -150,3 +150,12 @@ def test_decide_is_logged(monkeypatch, findings_file):
     assert "[needs-info]" in cli(monkeypatch, "list", str(findings_file))
     log = findings_file.with_name("review_Iter0_vs_Iter1.md").read_text()
     assert "check cluster size" in log
+
+
+def test_status_block_after_an_earlier_json_block():
+    earlier = 'Quoted output:\n```json\n{"hypotheses": []}\n```\n'
+    body, control, protocol_ok = expert_dialogue.parse_reply(
+        reply("converged", body=earlier + "Body."))
+    assert protocol_ok
+    assert control["status"] == "converged"
+    assert body == earlier + "Body."

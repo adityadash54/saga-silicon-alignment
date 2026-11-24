@@ -17,8 +17,8 @@ Backends:
       not-comparable rows, notable unflagged rows) are computed locally and
       sent in one prompt. It runs with no tools and no MCP connectors from an
       empty temporary directory, so it cannot read project files; other
-      user-level ~/.claude settings may still load. --effort and
-      --no-fallback are ignored.
+      user-level ~/.claude settings may still load. --no-fallback is
+      ignored; --effort is passed to `claude -p` when given.
 No ROOT files, hits or tracks are read or sent by either backend. Use
 --dry-run to print what would be sent without contacting anything.
 
@@ -36,7 +36,6 @@ import datetime as dt
 import hashlib
 import inspect
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -47,6 +46,7 @@ import numpy as np
 import pandas as pd
 
 from stdiag.compare_runs import stave_row_mask
+from stdiag.json_block import final_json_block
 
 DEFAULT_MODEL = "claude-opus-5-5"
 # chip is the chip/sensor id for MVTX/INTT (-1 = whole stave/ladder) and the
@@ -454,8 +454,8 @@ def build_offline_context(summary: dict) -> str:
     return "\n\n".join(blocks)
 
 
-def run_triage_claude_code(summary: dict,
-                           model: str) -> tuple[str, str, dict]:
+def run_triage_claude_code(summary: dict, model: str,
+                           effort: str | None) -> tuple[str, str, dict]:
     claude = shutil.which("claude")
     if claude is None:
         sys.exit("ERROR: the Claude Code CLI 'claude' was not found on PATH.")
@@ -463,6 +463,8 @@ def run_triage_claude_code(summary: dict,
     command = [claude, "-p", "--output-format", "json", "--model", model,
                "--tools", "", "--strict-mcp-config", "--no-session-persistence",
                "--system-prompt", SYSTEM_PROMPT + OFFLINE_NOTE]
+    if effort is not None:
+        command += ["--effort", effort]
     # An empty working directory keeps project files (and any synthetic
     # truth) out of the CLI's context.
     with tempfile.TemporaryDirectory() as empty_directory:
@@ -482,6 +484,7 @@ def run_triage_claude_code(summary: dict,
         sys.exit(f"ERROR: the Claude Code CLI failed (exit {result.returncode})"
                  f": {result.stderr.strip() or 'no output'}")
     usage = {"models": sorted(reply.get("modelUsage", {})),
+             "effort": effort,
              "usage": reply.get("usage", {}),
              "total_cost_usd": reply.get("total_cost_usd"),
              "duration_ms": reply.get("duration_ms"),
@@ -490,7 +493,6 @@ def run_triage_claude_code(summary: dict,
     return text, f"{model} via Claude Code CLI", usage
 
 
-FINDINGS_BLOCK = re.compile(r"```json\s*(\{.*\})\s*```\s*$", re.DOTALL)
 # chip: chip/sensor id for MVTX/INTT (-1 = whole stave/ladder), track-phi bin
 # for VERTEX rows.
 ENTRY_KEYS = ["detector", "layer", "stave", "chip", "coord"]
@@ -498,18 +500,25 @@ GROUPS = {"A", "B", "C", "D", "E"}
 
 
 def split_findings(triage_text: str) -> tuple[str, dict | None]:
-    match = FINDINGS_BLOCK.search(triage_text)
-    if not match:
+    start, findings = final_json_block(triage_text)
+    if start is None:
         return triage_text, None
+    return triage_text[:start].rstrip(), findings
+
+
+def as_index(value):
+    """layer/stave/chip as int, so 1, "1" and 1.0 give the same key."""
     try:
-        findings = json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return triage_text, None
-    return triage_text[:match.start()].rstrip(), findings
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return int(number) if number.is_integer() else str(value)
 
 
 def entry_key(values) -> tuple:
-    return tuple(str(value) for value in values)
+    detector, layer, stave, chip, coord = values
+    return (str(detector).upper(), as_index(layer), as_index(stave),
+            as_index(chip), str(coord).lower())
 
 
 def validate_findings(findings: dict | None) -> dict:
@@ -535,9 +544,11 @@ def validate_findings(findings: dict | None) -> dict:
                       for finding in findings["findings"]
                       if finding.get("group") not in GROUPS]
     unassigned = sorted(flagged - assigned.keys())
-    duplicated = {" ".join(key): ids for key, ids in assigned.items()
+    duplicated = {" ".join(map(str, key)): ids
+                  for key, ids in assigned.items()
                   if key in flagged and len(ids) > 1}
-    return {"passed": not unassigned and not unknown and not invalid_groups,
+    return {"passed": (not unassigned and not unknown and not invalid_groups
+                       and not duplicated),
             "unassigned_flagged": [list(key) for key in unassigned],
             "unknown_entries": unknown,
             "invalid_groups": invalid_groups,
@@ -554,7 +565,9 @@ def validation_line(findings_name: str, validation: dict) -> str:
             f"{len(validation['unassigned_flagged'])} flagged entries not in "
             f"any finding, {len(validation['unknown_entries'])} unknown "
             f"entries, {len(validation.get('invalid_groups', []))} findings "
-            "with a group other than A-E.")
+            "with a group other than A-E, "
+            f"{len(validation.get('flagged_in_several_findings', {}))} "
+            "flagged entries in more than one finding.")
 
 
 def build_report(summary: dict, flags_path: Path, summary_path: Path,
@@ -606,8 +619,10 @@ def main() -> None:
                         help="report path (default triage_report_<A>_vs_<B>.md "
                              "next to the flags file)")
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--effort", default="high",
-                        choices=["low", "medium", "high", "xhigh", "max"])
+    parser.add_argument("--effort", default=None,
+                        choices=["low", "medium", "high", "xhigh", "max"],
+                        help="api default: high; claude-code default: the "
+                             "CLI's own setting")
     parser.add_argument("--no-fallback", action="store_true",
                         help="disable the server-side refusal fallback")
     parser.add_argument("--backend", default="api",
@@ -636,13 +651,13 @@ def main() -> None:
         return
 
     if args.backend == "claude-code":
-        print("Note: --effort and --no-fallback do not apply to the "
-              "claude-code backend.", file=sys.stderr)
+        print("Note: --no-fallback does not apply to the claude-code "
+              "backend.", file=sys.stderr)
         triage_text, served_model, usage = run_triage_claude_code(
-            ComparisonData.summary, args.model)
+            ComparisonData.summary, args.model, args.effort)
     else:
         triage_text, served_model = run_triage(
-            ComparisonData.summary, args.model, args.effort,
+            ComparisonData.summary, args.model, args.effort or "high",
             not args.no_fallback)
         usage = {}
     stem = args.flags.stem.removeprefix("flags_")
