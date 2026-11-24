@@ -136,6 +136,45 @@ specifications (ALPIDE 26.88 × 29.24 µm pixels; INTT 78 µm strip pitch, 16 mm
 strips), slightly widened for the track uncertainty. No real-data values are
 used.
 
+## Run-by-run series (stdiag.run_stability)
+
+`make_synthetic_run_series.py` writes a 60-run series: one
+`residual_fits_run<N>.csv` per run, with non-contiguous run numbers, the full
+geometry, and the same static offsets, widths and errors as above. It also has
+per-run jitter of the mean (1 µm MVTX, 4 µm INTT r-φ, 0.3 mm INTT z), a
+per-run layer jitter (half of that), 2% width jitter and a per-run luminosity
+factor of 0.3–1.0. The jitter sizes are a guess, not a measurement.
+`--null` keeps every random number but drops the position and width changes.
+`check_run_stability.py` checks the change points against:
+
+| Name | Where | Change | Expected |
+|---|---|---|---|
+| `step_chip` | MVTX L0 S5 C3 r-φ | +10 µm from run 20 | `step` |
+| `step_sensor` | INTT L4 ladder 6 sensor 1 r-φ | +40 µm from run 15 | `step` |
+| `step_stave` | MVTX L1 S4, all chips, r-φ | +8 µm from run 30 | `coherent_stave` |
+| `step_halflayer` | MVTX L2 staves 0–9, z | +6 µm from run 40 | `multi_stave` (or `layer_mode`) |
+| `layer_rotation` | MVTX L1, all staves, r-φ | +7 µm from run 52 | `layer_mode`, ≤ 3 sensor steps left |
+| `transient` | MVTX L0 S8 C2 r-φ | +15 µm in runs 22–27 | `transient` 22 → 28 |
+| `step_near_threshold` | MVTX L1 S2 C7 z | +6 µm from run 35 | either |
+| `step_sub_threshold` | MVTX L2 S7 C0 r-φ | +3 µm from run 25 | **nothing** |
+| `drift` | MVTX L1 S10 C4 r-φ | 0 → +12 µm over runs 10–50 | `drift` (start, end ±6) |
+| `drift_sub_threshold` | INTT L5 ladder 2 sensor 0 r-φ | +10 µm over 60 runs | **nothing** |
+| `outlier` | MVTX L0 S1 C1 r-φ | +30 µm in run 33 only | `outlier_run`, no step |
+| `bad_run` | all MVTX | σ × 1.5 and 15 µm random offsets in run 47 | `bad_run` |
+| `low_stats` | everything | 5% luminosity in runs 12 and 44 | **nothing** |
+| `missing_ladder` | INTT L5 ladder 9 | absent in runs 18–24 | **nothing** |
+| `width` | MVTX L0 S2 C5, both coordinates | σ × 1.4 from run 28 | `width_step` |
+
+Each expectation must hold within ±2 runs. At most 2 change points may be
+unexplained by any injection. With `--null`, only that budget applies.
+
+```bash
+python -m synthetic.make_synthetic_run_series --out-dir synthetic/run_series_output [--null] [--seed N]
+python -m stdiag.run_stability synthetic/run_series_output/residual_fits_run*.csv \
+    --out-dir synthetic/run_series_output/scan --run-info synthetic/run_series_output/run_info.csv
+python -m synthetic.check_run_stability synthetic/run_series_output/scan/changepoints_*.csv [--null]
+```
+
 ## Not covered by this test
 
 - Real `ntp` files: the fit macro has only run on synthetic clusters (with
@@ -149,3 +188,7 @@ used.
   40-entry chip; the prompt now also carries the full stave overview of each
   flagged layer and a notable-unflagged list that includes both, but this
   version has not yet been run live.
+- The run series: it is made at the fit-table level only (no ROOT clusters,
+  no fit macro), with Gaussian noise and jitter of guessed size, and without
+  the track pull of biased residuals. Its false-alarm rate says nothing about
+  real data; measure that on a stable period of real runs.

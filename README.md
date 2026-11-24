@@ -10,6 +10,14 @@ track-to-vertex residuals (−DCA_xy, −DCA_z), between productions
 residuals changed, and helps a reviewer investigate **candidate causes** in
 sPHENIX `coresoftware`, ACTS and Millepede-II.
 
+It also monitors **run-by-run stability**. With one fit table per run, every
+MVTX chip and INTT sensor gets a time series of its residual mean and width.
+Three change-point methods (CUSUM, PELT and Bayesian online change-point
+detection) find the runs where a sensor, a stave or a whole layer moved, or
+where its resolution changed. Layer-wide common-mode shifts are separated
+from single-sensor movements. Like the comparison, this step is deterministic
+and uses no AI. See [Run-by-run stability](#run-by-run-stability).
+
 What it is: statistical residual comparison with fixed, reproducible
 criteria, plus AI agents that group the flags and propose evidence-backed
 hypotheses. What it is not: an automatic root-cause finder. The agents
@@ -23,6 +31,8 @@ alignment file) and records it with `review decide`.
 flowchart LR
   L[ntuple lists<br/>one per label] --> F[plot_fits_overlaid_stavechip.C<br/>per-chip + vertex<br/>Gaussian fits, CSV + plots]
   F --> C[compare_runs<br/>flags + report]
+  F -- one table per run --> S[run_stability<br/>CUSUM, PELT, BOCPD<br/>change points per sensor]
+  S --> SR[(changepoints + report)]
   C --> T[triage_agent<br/>AI: groups the flags]
   T --> R{{Reviewer<br/>review}}
   R -- ask --> X[coresoftware expert<br/>AI, read-only git]
@@ -32,7 +42,8 @@ flowchart LR
   R -- continue / decide --> G[(review log)]
 ```
 
-The fit and comparison steps use no AI and never leave the machine. The
+The fit, comparison and run-by-run stability steps use no AI and never leave
+the machine. The
 triage and the experts are Claude agents. Routing, turn limits and stopping
 are fixed Python code (`stdiag/review.py`, `stdiag/expert_dialogue.py`); the
 agents never decide which agent runs next, and the reviewer approves every
@@ -42,15 +53,18 @@ extra round and makes the final decision.
 
 ```
 macros/      ROOT: plot_fits_overlaid_stavechip.C (fits -> CSV tables, and plots)
-stdiag/      Python package: compare_runs, triage_agent, review,
-             coresoftware_expert, tracking_expert, expert_dialogue,
-             fetch_tracking_docs, paths
+stdiag/      Python package: compare_runs, run_stability, triage_agent,
+             review, coresoftware_expert, tracking_expert,
+             expert_dialogue, fetch_tracking_docs, paths
 maps/        coresoftware_code_map.md, tracking_docs_map.md, labels.example.csv
 synthetic/   synthetic data with injected changes: ROOT ntuples
              (make_synthetic_ntp.C) and fit tables, truth check,
              run_full_pipeline.sh, run_test.sh, reference/ outputs,
              example reports; stavechip_demo/ (one stave and one
-             ladder, every step by hand)
+             ladder, every step by hand); make_synthetic_run_series.py
+             and check_run_stability.py (60-run series for run_stability)
+notebooks/   run_stability_synthetic.ipynb (change-point methods on the
+             synthetic run series; outputs in notebooks/output/, local only)
 tests/       pytest suite (no AI calls)
 evals/       evaluation layer for the AI agents (see evals/README.md)
 inputs/      your residual_fits_<name>.csv tables to compare (local only;
@@ -167,6 +181,21 @@ less $RUN/triage_report_*.md
 ```
 
 The report header must say `validation passed`.
+
+To choose the model and effort, add `--model` and `--effort`:
+
+```bash
+python -m stdiag.triage_agent $RUN/flags_*.csv $RUN/summary_*.json --backend claude-code \
+    --model opus --effort xhigh --usage-out $RUN/usage_triage.json
+```
+
+- `--model` takes a full model ID (default `claude-opus-5-5`) or, with the
+  claude-code backend, a Claude Code alias such as `opus`, `sonnet` or `fable`.
+- `--effort` takes `low`, `medium`, `high`, `xhigh` or `max`. With
+  `--backend claude-code` it is passed to `claude -p`; if left out, the CLI
+  uses its own effort setting. With `--backend api` the default is `high`.
+- `--usage-out` writes the model that served the run, the effort, tokens,
+  cost and time to a JSON file (claude-code backend only).
 
 **5. Review.**
 
@@ -360,6 +389,54 @@ State is saved after every turn (`dialogue_*.json`); the transcript is
 answer, and `review check` runs a one-off tracking expert review of any
 answer or transcript.
 
+## Run-by-run stability
+
+`compare_runs` compares two inputs. `stdiag.run_stability` follows **every MVTX
+chip and INTT sensor over many runs**: one `residual_fits_<run>.csv` per run
+(the fit macro's usual output, one label per run) gives a series μ(run) and
+σ(run) per sensor and coordinate, and three change-point methods find the
+runs where they change. No AI, nothing leaves the machine.
+
+```bash
+python -m stdiag.run_stability residual_fits_run*.csv --run-info runs.csv
+# -> runs/stability_<first>_to_<last>/changepoints_*.csv, stability_report_*.md,
+#    series_*.csv, detections_*.csv, stability_summary_*.json
+```
+
+| Step | What it does |
+|---|---|
+| Errors | fit error ⊕ extra run-to-run scatter (MAD of run-to-run differences, per series) |
+| Outliers | a run more than 6σ from the runs on both sides is an `outlier_run`; a run with >20% outliers in a detector is a `bad_run` and is left out |
+| Common mode | per run, layer and coordinate: clipped mean (`--common-mode offset`, default) or a + b sin φ + c cos φ (`harmonic`); its own series is scanned (`layer_mode`), sensors are scanned relative to it and raw |
+| Methods | two-sided CUSUM (k = minimum shift / 2), PELT (weighted Gaussian cost), BOCPD (Adams–MacKay, per-run errors); thresholds by Monte Carlo for about one false alarm per method per scan (`--expected-false`) |
+| Criteria | 2 of 3 methods within ±2 runs, \|Δ\| above the `compare_runs` minimum shift (σ: 20% of the reference width) and z > 5 |
+| Classes | `step`, `width_step`, `transient`, `drift` (ramp beats steps), `outlier_run`, `bad_run`, `coherent_stave`, `multi_stave`, `layer_mode` |
+
+Runs are ordered by the number in each label, or by `--order FILE`.
+`--run-info` (columns `run`, `note`) attaches notes such as magnet ramps or
+new alignment tags to the changes at or just after that run. Stave rows
+(chip = −1) and VERTEX rows are not scanned yet.
+
+A change of μ means the sensor moved relative to the geometry used in
+reconstruction **only if every run used the same alignment tag, field, track
+selection and distortion corrections**; biased residuals understate the
+displacement, and weak modes barely show. Before trusting change points on
+real data, scan a period known to be stable: the number of events there is
+the real false-alarm rate.
+
+Synthetic test (60 runs, 15 injected effects including decoys that must not
+be reported; see `synthetic/README.md`):
+
+```bash
+python -m synthetic.make_synthetic_run_series --out-dir synthetic/run_series_output
+python -m stdiag.run_stability synthetic/run_series_output/residual_fits_run*.csv \
+    --out-dir synthetic/run_series_output/scan --run-info synthetic/run_series_output/run_info.csv
+python -m synthetic.check_run_stability synthetic/run_series_output/scan/changepoints_*.csv
+```
+
+The notebook `notebooks/run_stability_synthetic.ipynb` walks through every
+method on this series (`pip install -e ".[notebook]"`).
+
 ## Tests and CI
 
 ```bash
@@ -376,14 +453,16 @@ is run by hand. CI never calls an AI model and needs no credentials.
 
 ## Evaluation layer
 
-The framework is evaluated in three parts. The steps without AI and the code
-around the agents are tested against known answers; the AI agents themselves
+The framework is evaluated in four parts. The steps without AI (including
+run-by-run stability) and the code around the agents are tested against
+known answers; the AI agents themselves
 have an eval in `evals/` that is built but not yet run. Details are in
 [Validation status](#validation-status) and [`evals/README.md`](evals/README.md).
 
 | Part | Steps | Criteria | Results |
 |---|---|---|---|
 | **Steps without AI** (fits, comparison) | Synthetic data with known injected changes → fit macro → `compare_runs` → `check_against_truth` / `check_demo` | Every row's status (flagged, unchanged, not comparable) matches the injected truth; statistically limited rows may go either way | Fit tables: 1312/1312 rows, 2 comparisons, 20 seeds. From ROOT files: 1550/1550 rows, reference seed and seeds 1–8. Stave/chip demo: current fit passes; the old settings fail in the 4 expected entries |
+| **Run-by-run stability** (no AI) | 60-run synthetic series of fit tables (`make_synthetic_run_series`) with 15 injected effects: chip, sensor, stave, half-layer and whole-layer steps, a transient, a drift, a one-run outlier, a bad run, a width change, and decoys that must not be reported (3 µm step, sub-threshold drift, 5%-luminosity runs, a missing ladder) → `run_stability` → `check_run_stability` | Every injection found with its expected class within ±2 runs (±6 for drift start and end); decoys give nothing; at most 2 unexplained change points per scan; a series with no changes (`--null`) gives none | 15 seeds × (injected + null): 30/30 pass. Null series: 0 change points in all 15; before the final criteria the methods fire 1.3 (BOCPD), 1.2 (PELT) and 0.9 (CUSUM) times per scan (target about 1). Injected series: 1 unexplained change point in total (seed 3: a half-layer step labelled a drift starting 3 runs early) |
 | **Code around the agents** | `pytest` with scripted agent replies (no AI) | Triage output validation (missing or invented entries, invalid groups, no JSON), no truth in the triage prompt, dialogue routing (convergence, turn limits, questions to the reviewer, missing status blocks), run folders | 34 tests pass; they also run in CI |
 | **AI triage** (`evals/triage/`) | 21 synthetic cases × 2 repetitions: no change, stave-wide, single chip or sensor, width, mean and width, missing ladder, sub-threshold and low-statistics decoys, two mixed. Each runs the real comparison and the real triage; the runner refuses to start until the reviewer approves a checksum of the harness | Graded by code from `findings_*.json`. A run passes if validation passed, every injected change that produces flags is matched by one finding (≥80% overlap both ways) in the expected group, and there are no invented or merged findings. Recall, group accuracy, cost and time are also recorded | Grader self-test passes on all 21 cases: a perfect answer passes everywhere, and empty or lumped-together answers fail where they should. **The benchmark has not been run yet, so there is no pass rate.** Two earlier live runs on the synthetic Iter1/Iter2 comparisons grouped every injected change correctly; that is too few to quote an accuracy, and 42 runs will still carry about ±15 percentage points |
 
@@ -560,12 +639,40 @@ Tested:
     (−300.8 µm) instead of being `low_stats`; a chip at +800 µm (outside
     the histogram range) is `out_of_range`.
   - The +10 µm MVTX chip shift is found (+9.3 µm) in both versions.
+- **Run-by-run stability** (`stdiag/run_stability.py`, synthetic fit tables
+  only; `synthetic/make_synthetic_run_series.py`,
+  `synthetic/check_run_stability.py`, `tests/test_run_stability.py`):
+  - 60 runs × 1312 series, 15 injected effects (table in
+    `synthetic/README.md`). For 15 seeds, every injection is found with its
+    expected class and run, and none of the decoys is reported (3 µm step,
+    sub-threshold drift, 5%-luminosity runs, missing ladder). There is one
+    unexplained change point in total: in seed 3, a half-layer step whose
+    preceding runs happen to have about +2.5 µm of jitter is labelled a
+    drift starting 3 runs early.
+  - The same 15 seeds without position or width changes (`--null`) give
+    0 change points. Before the consensus and minimum-shift criteria the
+    methods fire 1.3 (BOCPD), 1.2 (PELT) and 0.9 (CUSUM) times per scan,
+    close to the target of about 1.
+  - The methods were checked on their own (pytest): the vectorised scan gives the same
+    change points as PELT with pruning on random series with gaps and
+    unequal errors; known steps are found at the right run by all three
+    methods; a flat series gives none; a significant 3 µm step is removed
+    by the minimum shift; step, transient and drift are classified correctly;
+    a one-run spike is an outlier, not a step; the offset and harmonic
+    common modes recover an injected layer shift and sin φ modulation.
+  - Two problems found by this validation and fixed: (1) assuming known errors in the threshold Monte Carlo gave about 25 times
+    too many raw BOCPD alarms; the Monte Carlo now estimates the errors the way the scan does. (2) A CUSUM baseline fixed from the
+    first 5 runs made the low-statistics threshold explode (h ≈ 56); the CUSUM is now self-starting (h ≈ 9).
+  - The notebook `notebooks/run_stability_synthetic.ipynb` runs end to end
+    (all cells, about 1 minute); it was executed cell by cell outside
+    Jupyter, because no kernel could be started in the test environment.
 
 Not yet run live: the vertex page and VERTEX rows on real `track_ntp`,
 `macros/plot_fits_overlaid_stavechip.C` on real `ntp` files, the INTT z box
 fit and `out_of_range` on real `ntp` files, the
 current triage prompt, both experts and their dialogue (including whether
-the read-only and web-domain limits hold in practice), and the API backend.
+the read-only and web-domain limits hold in practice), the API backend, and
+`run_stability` on any real run series.
 
 ## Limitations
 
@@ -586,3 +693,21 @@ the read-only and web-domain limits hold in practice), and the API backend.
   `m_siOnlyTpcSeedPt` both on, it comes from the TPC seed.
 - Each expert turn takes minutes; a full dialogue round is up to six agent
   runs.
+- Run-by-run stability is validated on synthetic fit tables only, with
+  Gaussian noise, run-to-run jitter of guessed size and no biased-residual
+  pull. Its thresholds aim at about one false alarm per method per scan for
+  Gaussian noise; the real-data rate must be measured on a stable run period.
+- A residual-mean change between runs is a sensor movement only if every run
+  used the same alignment/geometry tag, field, track selection and distortion
+  corrections; otherwise a condition change looks like a movement.
+- With errors estimated from each series, BOCPD's Gaussian predictive is
+  overconfident. Its calibrated threshold reaches the 1 − 10⁻⁹ cap in most
+  groups, so it is the least sensitive method at low statistics; a Student-t
+  predictive would be the standard improvement.
+- A step can be labelled a short drift (or the reverse) when run-to-run
+  jitter falls just before it; drifts need at least 6 runs and a BIC margin.
+  Change sizes within about 1.5× the minimum shift are biased upward.
+- A partial-layer movement shifts the layer common mode below the minimum
+  shift; the moved staves are then reported from the raw series
+  (`coherent_stave`/`multi_stave`), not as a `layer_mode`.
+- Stave rows (chip = −1) and VERTEX rows are not scanned run by run yet.
