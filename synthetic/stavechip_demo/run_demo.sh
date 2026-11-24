@@ -39,10 +39,12 @@ cp "${MACRO}" after/
 import sys
 text = open(sys.argv[1]).read()
 replacements = [
-    ("0.05, 0.5, 0.015, 0.05, 0.5, 0.015, false};",
+    ("0.04, 0.5, 0.015, 0.04, 0.5, 0.015, false};",
      "0.05, 0.05, 0.015, 0.05, 0.05, 0.015, false};"),
-    ("0.6, 3.0, 0.2, 20.0, 40.0, 5.0, true};",
+    ("0.4, 3.0, 0.2, 20.0, 40.0, 5.0, true};",
      "0.6, 0.6, 0.2, 20.0, 20.0, 5.0, false};"),
+    ("constexpr double kVertexDisplayRangeMm = 0.15;",
+     "constexpr double kVertexDisplayRangeMm = 2.0;"),
     ("constexpr double kMaximumOutOfRangeFraction = 0.5;",
      "constexpr double kMaximumOutOfRangeFraction = 2.0;"),
 ]

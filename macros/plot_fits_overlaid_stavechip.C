@@ -10,6 +10,7 @@
 #include <TH1F.h>
 #include <TLegend.h>
 #include <TLatex.h>
+#include <TLine.h>
 #include <TMath.h>
 #include <TROOT.h>
 #include <TString.h>
@@ -27,7 +28,6 @@
 #include <iostream>
 #include <limits>
 #include <map>
-#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -41,8 +41,10 @@
 //   - one CSV table per input file list (writeToCsv), read by compare_runs.py,
 //     and, with track_ntp, one table per input with the A*sin(phi - phi0) + c
 //     fit to <-DCA_xy> vs track phi;
-//   - a PDF (plus PNGs) with one page per stave and coordinate and a final
-//     track-to-vertex residual page (makePlots).
+//   - a PDF (plus PNGs with savePngs) starting with per-layer summary pages of the fitted
+//     mean and width of every chip versus its stave-chip ID
+//     (drawStaveChipSummary), then one page per stave and coordinate and a
+//     final track-to-vertex residual page (makePlots).
 // Runs locally only; nothing is sent to any external service.
 
 namespace
@@ -95,18 +97,24 @@ namespace
   // use zFitRangeMm.
   constexpr DetectorConfig kMvtxConfig = {
     "MVTX", "mvtx", "Chip", "All chips combined", 0, 3, 9, 5, 2,
-    0.05, 0.5, 0.015, 0.05, 0.5, 0.015, false};
+    0.04, 0.5, 0.015, 0.04, 0.5, 0.015, false};
   constexpr DetectorConfig kInttConfig = {
     "INTT", "intt", "Sensor", "All sensors combined", 3, 4, 4, 3, 2,
-    0.6, 3.0, 0.2, 20.0, 40.0, 5.0, true};
+    0.25, 3.0, 0.2, 20.0, 40.0, 5.0, true};
 
   // Track-to-vertex residuals from track_ntp, stored by MakeMilleFiles as
-  // (-DCA_xy, -DCA_z) in mm. Ranges follow plot_fits_overlaid.C
-  // (+-0.2 cm displayed, +-0.05 cm fitted).
+  // (-DCA_xy, -DCA_z) in mm. Displayed over +-kVertexDisplayRangeMm and
+  // filled over the wider +-kVertexHistogramRangeMm (the +-0.2 cm of
+  // plot_fits_overlaid.C), with the chip bin width rule (kResidualBins over
+  // the display range); the fit seed half-width is kVertexFitRangeMm.
   constexpr const char* kVertexDetectorName = "VERTEX";
-  constexpr double kVertexDisplayRangeMm = 2.0;
-  constexpr double kVertexFitRangeMm = 0.5;
+  constexpr double kVertexDisplayRangeMm = 0.15;
+  constexpr double kVertexHistogramRangeMm = 2.0;
+  constexpr double kVertexFitRangeMm = 0.1;
   constexpr int kVertexPhiBins = 14;
+  // MVTX staves (L0-L2) and INTT ladders (L3-L6) per layer; sets the
+  // stave-chip ID axis of the summary pages, so missing staves show as gaps.
+  constexpr int kStavesPerLayer[] = {12, 16, 20, 12, 12, 16, 16};
 
   struct InputSpec
   {
@@ -168,13 +176,6 @@ namespace
     std::vector<std::vector<TH1D*>> zHistograms;
     std::vector<std::vector<ChipFitResult>> rphiFits;
     std::vector<std::vector<ChipFitResult>> zFits;
-    // Sums over all chips of the stave, indexed as [input]; built by
-    // build_stave_sums after every input is filled. Written to the CSV with
-    // chip = -1.
-    std::vector<TH1D*> rphiStaveHistograms;
-    std::vector<TH1D*> zStaveHistograms;
-    std::vector<ChipFitResult> rphiStaveFits;
-    std::vector<ChipFitResult> zStaveFits;
   };
 
   using StaveHistogramMap =
@@ -274,6 +275,32 @@ namespace
     }
 
     return sanitized.empty() ? "input" : sanitized;
+  }
+
+  // "<outputPdf without .pdf>_<label1>_<label2>....pdf" (as
+  // multipage_pdf_name of plot_fits_overlaid.C), or
+  // "<outputPdf without .pdf>_longfilelist.pdf" when that name is longer
+  // than maxLength characters (macOS allows 255).
+  std::string labelled_pdf_name(
+    const std::string& outputPdf,
+    const std::vector<InputSpec>& inputs,
+    size_t maxLength = 200)
+  {
+    const std::string extension = ".pdf";
+    std::string prefix = outputPdf;
+    if(prefix.size() >= extension.size() &&
+       prefix.compare(prefix.size() - extension.size(), extension.size(),
+                      extension) == 0)
+    {
+      prefix.erase(prefix.size() - extension.size());
+    }
+    std::string name = prefix;
+    for(const InputSpec& input : inputs)
+    {
+      name += "_" + sanitize_for_filename(input.label);
+    }
+    name += extension;
+    return name.size() > maxLength ? prefix + "_longfilelist" + extension : name;
   }
 
   // Labels name the CSV files and fill a CSV column, so they must be distinct
@@ -484,8 +511,6 @@ namespace
       numberOfInputs, std::vector<ChipFitResult>(config.chipsPerStave));
     histograms.zFits.assign(
       numberOfInputs, std::vector<ChipFitResult>(config.chipsPerStave));
-    histograms.rphiStaveFits.resize(numberOfInputs);
-    histograms.zStaveFits.resize(numberOfInputs);
 
     for(int input = 0; input < numberOfInputs; ++input)
     {
@@ -505,15 +530,10 @@ namespace
     return histograms;
   }
 
-  // With minimumPtGeV > 0, only clusters whose track has track_pt at or above
-  // the cut are filled (a non-finite pT fails the comparison, as for the
-  // vertex residuals); the caller checks that ntp has track_pt. At 0 the
-  // branch is not read, so ntuples without it are unaffected.
   void fill_silicon_histograms(
     TChain* ntp,
     int inputIndex,
     int numberOfInputs,
-    double minimumPtGeV,
     StaveHistogramMap& histograms)
   {
     TTreeReader reader(ntp);
@@ -522,20 +542,9 @@ namespace
     TTreeReaderValue<Float_t> chipValue(reader, "chip");
     TTreeReaderValue<Float_t> residualXValue(reader, "residualX");
     TTreeReaderValue<Float_t> residualYValue(reader, "residualY");
-    std::unique_ptr<TTreeReaderValue<Float_t>> ptValue;
-    if(minimumPtGeV > 0.0)
-    {
-      ptValue = std::make_unique<TTreeReaderValue<Float_t>>(
-        reader, "track_pt");
-    }
 
     while(reader.Next())
     {
-      if(ptValue && !(**ptValue >= minimumPtGeV))
-      {
-        continue;
-      }
-
       int layer = -1;
       int stave = -1;
       int chip = -1;
@@ -574,58 +583,20 @@ namespace
     }
   }
 
-  TH1D* sum_chip_histograms(
-    const DetectorConfig& config,
-    int layer,
-    int stave,
-    int inputIndex,
-    const char* coordinateName,
-    const std::vector<TH1D*>& chipHistograms)
-  {
-    TH1D* staveHistogram = static_cast<TH1D*>(
-      chipHistograms.front()->Clone(Form(
-        "h_%s_L%d_stave%d_allchips_in%d_%s",
-        config.outputPrefix, layer, stave, inputIndex, coordinateName)));
-    staveHistogram->SetDirectory(nullptr);
-    for(int chip = 1; chip < config.chipsPerStave; ++chip)
-    {
-      staveHistogram->Add(chipHistograms[chip]);
-    }
-    staveHistogram->SetTitle(config.combinedTitle);
-    return staveHistogram;
-  }
-
-  // Sums every stave's chip histograms per input; the sums are fitted with
-  // the chips and feed both the chip = -1 CSV rows and the combined panel.
-  void build_stave_sums(StaveHistogramMap& histograms, int numberOfInputs)
-  {
-    for(auto& entry : histograms)
-    {
-      StaveHistograms& stave = entry.second;
-      const DetectorConfig* config = get_detector_config(stave.layer);
-      for(int input = 0; input < numberOfInputs; ++input)
-      {
-        stave.rphiStaveHistograms.push_back(sum_chip_histograms(
-          *config, stave.layer, stave.stave, input, "rphi",
-          stave.rphiHistograms[input]));
-        stave.zStaveHistograms.push_back(sum_chip_histograms(
-          *config, stave.layer, stave.stave, input, "z",
-          stave.zHistograms[input]));
-      }
-    }
-  }
-
   TH1D* make_vertex_histogram(
     const TString& histogramName,
     const char* residualLabel,
     int inputIndex)
   {
+    // Same bin width as kResidualBins over the display range.
+    const int bins = static_cast<int>(std::lround(
+      kResidualBins * kVertexHistogramRangeMm / kVertexDisplayRangeMm));
     TH1D* histogram = new TH1D(
       histogramName.Data(),
       "",
-      kResidualBins,
-      -kVertexDisplayRangeMm,
-      kVertexDisplayRangeMm);
+      bins,
+      -kVertexHistogramRangeMm,
+      kVertexHistogramRangeMm);
     histogram->SetDirectory(nullptr);
     histogram->GetXaxis()->SetTitle(Form("%s [mm]", residualLabel));
     histogram->GetYaxis()->SetTitle("Entries");
@@ -735,8 +706,6 @@ namespace
       {
         delete_histograms(chipHistograms);
       }
-      delete_histograms(entry.second.rphiStaveHistograms);
-      delete_histograms(entry.second.zStaveHistograms);
     }
     staveHistograms.clear();
 
@@ -1002,11 +971,6 @@ namespace
             histograms.zHistograms[input][chip], config->zFitRangeMm,
             config->zUsesBoxFit);
         }
-        histograms.rphiStaveFits[input] = fit_core_gaussian(
-          histograms.rphiStaveHistograms[input], config->rphiFitRangeMm);
-        histograms.zStaveFits[input] = fit_residual(
-          histograms.zStaveHistograms[input], config->zFitRangeMm,
-          config->zUsesBoxFit);
       }
     }
 
@@ -1174,9 +1138,8 @@ namespace
   // CSV tables
   // ---------------------------------------------------------------------------
 
-  // chip is the chip/sensor id for MVTX/INTT (-1 = whole stave/ladder); for
-  // VERTEX rows it is the track-phi bin (-1 = all tracks). minimumPtGeV is the
-  // track pT cut that applied to the row.
+  // chip is the chip/sensor id for MVTX/INTT; for VERTEX rows it is the
+  // track-phi bin (-1 = all tracks).
   void write_fit_row(
     std::ofstream& output,
     const InputSpec& input,
@@ -1186,8 +1149,7 @@ namespace
     int chip,
     const char* coordinateName,
     const TH1D* histogram,
-    const ChipFitResult& fitResult,
-    double minimumPtGeV)
+    const ChipFitResult& fitResult)
   {
     const TruncatedMean truncatedMean = truncated_mean(histogram);
     output << input.label << ',' << input.listfile << ','
@@ -1205,8 +1167,7 @@ namespace
            << histogram->GetBinContent(0) << ','
            << histogram->GetBinContent(histogram->GetNbinsX() + 1) << ','
            << fitResult.boxLength << ',' << fitResult.boxLengthError << ','
-           << fitResult.edgeSigma << ',' << fitResult.edgeSigmaError << ','
-           << minimumPtGeV << '\n';
+           << fitResult.edgeSigma << ',' << fitResult.edgeSigmaError << '\n';
   }
 
   // Writes one vertex row per coordinate; returns the number of successful
@@ -1218,29 +1179,25 @@ namespace
     const TH1D* transverseHistogram,
     const ChipFitResult& transverseFit,
     const TH1D* longitudinalHistogram,
-    const ChipFitResult& longitudinalFit,
-    double minimumPtGeV)
+    const ChipFitResult& longitudinalFit)
   {
     write_fit_row(
       output, input, kVertexDetectorName, -1, -1, phiBin, "dca_xy",
-      transverseHistogram, transverseFit, minimumPtGeV);
+      transverseHistogram, transverseFit);
     write_fit_row(
       output, input, kVertexDetectorName, -1, -1, phiBin, "dca_z",
-      longitudinalHistogram, longitudinalFit, minimumPtGeV);
+      longitudinalHistogram, longitudinalFit);
     return (transverseFit.status == "ok") + (longitudinalFit.status == "ok");
   }
 
   // Writes residual_fits_<label>.csv per input, one row per
-  // (layer, stave, chip, coordinate) and per (layer, stave, coordinate) for
-  // the whole stave (chip = -1), plus the VERTEX rows when any input had
-  // track_ntp. Returns false if a file could not be written.
+  // (layer, stave, chip, coordinate), plus the VERTEX rows when any input
+  // had track_ntp. Returns false if a file could not be written.
   bool write_csv_tables(
     const std::vector<InputSpec>& inputs,
     const StaveHistogramMap& staveHistograms,
     const VertexHistograms& vertexHistograms,
     bool writeVertexRows,
-    double residualMinimumPtGeV,
-    double vertexMinimumPtGeV,
     const char* outputDirectory)
   {
     gSystem->mkdir(outputDirectory, kTRUE);
@@ -1257,18 +1214,16 @@ namespace
         return false;
       }
 
-      // chip: chip/sensor id for MVTX/INTT (-1 = whole stave/ladder),
-      // track-phi bin for VERTEX rows. The columns after trunc_mean_err_mm
-      // are new; compare_runs.py reads columns by name, so it ignores them.
-      // min_pt_gev is the ntp track pT cut for MVTX/INTT rows and the
-      // track_ntp pT cut for VERTEX rows.
+      // chip: chip/sensor id for MVTX/INTT, track-phi bin for VERTEX rows.
+      // The columns after trunc_mean_err_mm are new; compare_runs.py reads
+      // columns by name, so it ignores them.
       output << std::setprecision(8)
              << "label,listfile,detector,layer,stave,chip,coord,entries,"
                 "entries_in_fit_window,populated_bins,fit_status,mu_mm,"
                 "mu_err_mm,sigma_mm,sigma_err_mm,chi2,ndf,fit_low_mm,"
                 "fit_high_mm,trunc_mean_mm,trunc_mean_err_mm,fit_model,"
                 "n_underflow,n_overflow,box_length_mm,box_length_err_mm,"
-                "edge_sigma_mm,edge_sigma_err_mm,min_pt_gev\n";
+                "edge_sigma_mm,edge_sigma_err_mm\n";
 
       int rows = 0;
       int goodFits = 0;
@@ -1282,35 +1237,17 @@ namespace
           write_fit_row(
             output, inputs[input], config->detectorName, histograms.layer,
             histograms.stave, chip, "rphi",
-            histograms.rphiHistograms[input][chip], rphiFit,
-            residualMinimumPtGeV);
+            histograms.rphiHistograms[input][chip], rphiFit);
 
           const ChipFitResult& zFit = histograms.zFits[input][chip];
           write_fit_row(
             output, inputs[input], config->detectorName, histograms.layer,
             histograms.stave, chip, "z",
-            histograms.zHistograms[input][chip], zFit, residualMinimumPtGeV);
+            histograms.zHistograms[input][chip], zFit);
 
           rows += 2;
           goodFits += (rphiFit.status == "ok") + (zFit.status == "ok");
         }
-
-        // chip id = -1: all chips of the stave combined.
-        const ChipFitResult& rphiStaveFit = histograms.rphiStaveFits[input];
-        write_fit_row(
-          output, inputs[input], config->detectorName, histograms.layer,
-          histograms.stave, -1, "rphi",
-          histograms.rphiStaveHistograms[input], rphiStaveFit,
-          residualMinimumPtGeV);
-        const ChipFitResult& zStaveFit = histograms.zStaveFits[input];
-        write_fit_row(
-          output, inputs[input], config->detectorName, histograms.layer,
-          histograms.stave, -1, "z",
-          histograms.zStaveHistograms[input], zStaveFit,
-          residualMinimumPtGeV);
-        rows += 2;
-        goodFits +=
-          (rphiStaveFit.status == "ok") + (zStaveFit.status == "ok");
       }
 
       if(writeVertexRows)
@@ -1321,7 +1258,7 @@ namespace
           vertexHistograms.transverseHistograms[input],
           vertexHistograms.transverseFits[input],
           vertexHistograms.longitudinalHistograms[input],
-          vertexHistograms.longitudinalFits[input], vertexMinimumPtGeV);
+          vertexHistograms.longitudinalFits[input]);
         rows += 2;
         for(int phiBin = 0; phiBin < kVertexPhiBins; ++phiBin)
         {
@@ -1330,8 +1267,7 @@ namespace
             vertexHistograms.transversePhiHistograms[input][phiBin],
             vertexHistograms.transversePhiFits[input][phiBin],
             vertexHistograms.longitudinalPhiHistograms[input][phiBin],
-            vertexHistograms.longitudinalPhiFits[input][phiBin],
-            vertexMinimumPtGeV);
+            vertexHistograms.longitudinalPhiFits[input][phiBin]);
           rows += 2;
         }
       }
@@ -1486,7 +1422,7 @@ namespace
     constexpr double leftMargin = 0.20;
     constexpr double bottomMargin = 0.13;
     constexpr double topMargin = 0.11;
-    gPad->SetGrid(1, 1);
+    gPad->SetGrid(0, 0);
     gPad->SetLeftMargin(leftMargin);
     gPad->SetRightMargin(0.05);
     gPad->SetBottomMargin(bottomMargin);
@@ -1636,9 +1572,11 @@ namespace
     low -= margin;
     high += margin;
 
+    // One legend row per input plus the averaging-range header.
     constexpr double legendTop = 0.88;
     constexpr double legendRowHeight = 0.065;
-    const double legendBottom = legendTop - legendRowHeight * numberOfInputs;
+    const double legendBottom =
+      legendTop - legendRowHeight * (numberOfInputs + 1);
     const double frameHeight = 1.0 - topMargin - bottomMargin;
     const double usableFraction = std::max(
       0.3, (legendBottom - 0.02 - bottomMargin) / frameHeight);
@@ -1694,6 +1632,11 @@ namespace
     legend->SetTextFont(42);
     legend->SetTextSize(0.036);
     legend->SetMargin(0.10);
+    // The points are truncated means over the vertex histogram range
+    // (make_phi_profile_graph), not Gaussian fits.
+    legend->SetHeader(Form(
+      "Mean of |#minusDCA| < %g mm (no Gaussian fit)",
+      kVertexHistogramRangeMm));
     for(int input = 0; input < numberOfInputs; ++input)
     {
       TString entryText = Form(
@@ -1758,14 +1701,30 @@ namespace
     pageTitle.DrawLatex(0.5, 1.0 - 0.5 * pageTitleHeight, title.Data());
   }
 
+  // ROOT takes the orientation of the whole PDF and the geometry of its first
+  // page from the canvas that opens it, so the first page opens the file
+  // ("(") instead of a dummy 1x1 canvas, which scrambled the first page. Every
+  // page is then landscape like the (wide) first one, so every canvas here
+  // must be wider than tall or its bottom is clipped in the PDF.
+  struct PdfOutput
+  {
+    std::string path;
+    bool isOpen = false;
+    bool savePngs = false;
+  };
+
   void print_and_delete_page(
     TCanvas* canvas,
-    const char* outputPdf,
+    PdfOutput& outputPdf,
     const char* outputPng,
     std::vector<TObject*>& ownedObjects)
   {
-    canvas->Print(outputPdf);
-    canvas->SaveAs(outputPng);
+    canvas->Print((outputPdf.path + (outputPdf.isOpen ? "" : "(")).c_str());
+    outputPdf.isOpen = true;
+    if(outputPdf.savePngs)
+    {
+      canvas->SaveAs(outputPng);
+    }
     delete canvas;
     // Delete in reverse so legends and fits go before the histograms they use.
     for(auto object = ownedObjects.rbegin(); object != ownedObjects.rend();
@@ -1782,17 +1741,16 @@ namespace
     int stave,
     const std::vector<std::vector<TH1D*>>& inputChipHistograms,
     const std::vector<std::vector<ChipFitResult>>& inputChipFits,
-    const std::vector<TH1D*>& staveHistograms,
-    const std::vector<ChipFitResult>& staveFits,
     const std::vector<InputSpec>& inputs,
     const char* coordinateName,
     const char* residualLabel,
     double residualDisplayRangeMm,
-    double minimumPtGeV,
+    double residualFitRangeMm,
+    bool useBoxFit,
     bool includeGaussianFit,
     bool drawHistogramsAsMarkers,
     bool normalizeToUnitArea,
-    const char* outputPdf,
+    PdfOutput& outputPdf,
     const char* outputPng)
   {
     const TString canvasName = Form(
@@ -1803,6 +1761,33 @@ namespace
       config.detectorName, layer, stave, residualLabel);
     const int numberOfInputs = static_cast<int>(inputs.size());
     std::vector<TObject*> ownedObjects;
+
+    // Per-input stave sums. They are not in the CSV, so they are fitted here
+    // with the same fit as the chips when the fit is shown.
+    std::vector<TH1D*> combinedHistograms;
+    std::vector<ChipFitResult> combinedFits(numberOfInputs);
+    combinedHistograms.reserve(numberOfInputs);
+    for(int input = 0; input < numberOfInputs; ++input)
+    {
+      const std::vector<TH1D*>& chipHistograms = inputChipHistograms[input];
+      TH1D* combinedHistogram = static_cast<TH1D*>(
+        chipHistograms.front()->Clone(Form(
+          "h_%s_L%d_stave%d_allchips_in%d_%s",
+          config.outputPrefix, layer, stave, input, coordinateName)));
+      combinedHistogram->SetDirectory(nullptr);
+      for(int chip = 1; chip < config.chipsPerStave; ++chip)
+      {
+        combinedHistogram->Add(chipHistograms[chip]);
+      }
+      combinedHistogram->SetTitle(config.combinedTitle);
+      ownedObjects.push_back(combinedHistogram);
+      combinedHistograms.push_back(combinedHistogram);
+      if(includeGaussianFit)
+      {
+        combinedFits[input] = fit_residual(
+          combinedHistogram, residualFitRangeMm, useBoxFit);
+      }
+    }
 
     TCanvas* canvas = new TCanvas(
       canvasName.Data(), canvasTitle.Data(),
@@ -1830,22 +1815,17 @@ namespace
         ownedObjects);
     }
 
-    // The stave sums and their fits are the chip = -1 rows of the CSV.
     canvas->cd(config.chipsPerStave + 1);
     draw_overlay_panel(
-      staveHistograms, staveFits, inputs,
+      combinedHistograms, combinedFits, inputs,
       Form("%ss 0-%d combined", config.panelLabel, config.chipsPerStave - 1),
       residualDisplayRangeMm, includeGaussianFit, drawHistogramsAsMarkers,
       normalizeToUnitArea, ownedObjects);
 
-    TString title = Form(
-      "%s layer %d, stave %d: local %s residuals",
-      config.detectorName, layer, stave, residualLabel);
-    if(minimumPtGeV > 0.0)
-    {
-      title += Form(" (p_{T} #geq %g GeV/c)", minimumPtGeV);
-    }
-    draw_page_title(canvas, pageTitleHeight, title);
+    draw_page_title(
+      canvas, pageTitleHeight,
+      Form("%s layer %d, stave %d: local %s residuals",
+           config.detectorName, layer, stave, residualLabel));
     print_and_delete_page(canvas, outputPdf, outputPng, ownedObjects);
   }
 
@@ -1853,8 +1833,7 @@ namespace
     const DetectorConfig& config,
     const StaveHistogramMap& histogramMap,
     const std::vector<InputSpec>& inputs,
-    const char* outputPdf,
-    double minimumPtGeV,
+    PdfOutput& outputPdf,
     bool includeGaussianFit,
     bool drawHistogramsAsMarkers,
     bool normalizeToUnitArea)
@@ -1876,21 +1855,467 @@ namespace
         histograms.layer, histograms.stave);
       draw_chip_residual_page(
         config, histograms.layer, histograms.stave,
-        histograms.rphiHistograms, histograms.rphiFits,
-        histograms.rphiStaveHistograms, histograms.rphiStaveFits, inputs,
-        "rphi", "r-#phi", config.rphiDisplayRangeMm, minimumPtGeV,
+        histograms.rphiHistograms, histograms.rphiFits, inputs, "rphi",
+        "r-#phi", config.rphiDisplayRangeMm, config.rphiFitRangeMm, false,
         includeGaussianFit, drawHistogramsAsMarkers, normalizeToUnitArea,
         outputPdf, (outputBase + "_rphi.png").Data());
       draw_chip_residual_page(
         config, histograms.layer, histograms.stave,
-        histograms.zHistograms, histograms.zFits,
-        histograms.zStaveHistograms, histograms.zStaveFits, inputs, "z", "Z",
-        config.zDisplayRangeMm, minimumPtGeV, includeGaussianFit,
-        drawHistogramsAsMarkers, normalizeToUnitArea, outputPdf,
-        (outputBase + "_z.png").Data());
+        histograms.zHistograms, histograms.zFits, inputs, "z", "Z",
+        config.zDisplayRangeMm, config.zFitRangeMm, config.zUsesBoxFit,
+        includeGaussianFit, drawHistogramsAsMarkers, normalizeToUnitArea,
+        outputPdf, (outputBase + "_z.png").Data());
     }
 
     return populatedStaves;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Stave-chip summary pages (as in plot_fits_overlaid_dcadistsfromstavechips.C)
+  // ---------------------------------------------------------------------------
+
+  // Per-chip fit results of one layer, coordinate (local r-phi or local z) and
+  // input versus the stave-chip ID (chipsPerStave * stave + chip, as in
+  // plot_fits_overlaid.C). Only chips with fit_status ok get a point;
+  // populatedChips counts the chips with any entry.
+  struct StaveChipGraphs
+  {
+    TGraphErrors* mean = nullptr;
+    TGraphErrors* sigma = nullptr;
+    int populatedChips = 0;
+  };
+
+  StaveChipGraphs make_stavechip_graphs(
+    const DetectorConfig& config,
+    int layer,
+    bool isZ,
+    int inputIndex,
+    const StaveHistogramMap& histogramMap)
+  {
+    const char* coordinateName = isZ ? "z" : "rphi";
+    StaveChipGraphs graphs;
+    graphs.mean = new TGraphErrors();
+    graphs.sigma = new TGraphErrors();
+    graphs.mean->SetName(Form(
+      "g_%s_L%d_in%d_%s_vs_stavechip_mean", config.outputPrefix, layer,
+      inputIndex, coordinateName));
+    graphs.sigma->SetName(Form(
+      "g_%s_L%d_in%d_%s_vs_stavechip_sigma", config.outputPrefix, layer,
+      inputIndex, coordinateName));
+    for(const auto& entry : histogramMap)
+    {
+      const StaveHistograms& histograms = entry.second;
+      if(histograms.layer != layer)
+      {
+        continue;
+      }
+
+      const std::vector<TH1D*>& chipHistograms = isZ
+        ? histograms.zHistograms[inputIndex]
+        : histograms.rphiHistograms[inputIndex];
+      const std::vector<ChipFitResult>& chipFits = isZ
+        ? histograms.zFits[inputIndex]
+        : histograms.rphiFits[inputIndex];
+      for(int chip = 0; chip < config.chipsPerStave; ++chip)
+      {
+        if(chipHistograms[chip]->GetEntries() <= 0.0)
+        {
+          continue;
+        }
+
+        ++graphs.populatedChips;
+        const ChipFitResult& fit = chipFits[chip];
+        if(fit.status != "ok")
+        {
+          continue;
+        }
+
+        const double x = config.chipsPerStave * histograms.stave + chip;
+        const int point = graphs.mean->GetN();
+        graphs.mean->SetPoint(point, x, fit.mean);
+        graphs.mean->SetPointError(point, 0.0, fit.meanError);
+        graphs.sigma->SetPoint(point, x, fit.sigma);
+        graphs.sigma->SetPointError(point, 0.0, fit.sigmaError);
+      }
+    }
+
+    for(TGraphErrors* graph : {graphs.mean, graphs.sigma})
+    {
+      graph->SetLineColor(input_color(inputIndex));
+      graph->SetMarkerColor(input_color(inputIndex));
+      graph->SetMarkerStyle(input_marker_style(inputIndex));
+      graph->SetMarkerSize(0.8);
+    }
+
+    return graphs;
+  }
+
+  // Fit drawn over every input graph of a summary pad: a constant (pol0) or
+  // a straight line (pol1) versus stave-chip ID.
+  enum class SummaryFit
+  {
+    none,
+    constant,
+    line
+  };
+
+  // Draws the per-input graphs of one statistic (fitted mean or width) in the
+  // current pad over [xLow, xHigh], with dotted vertical lines at
+  // boundaryLines (the stave boundaries). The y range covers the points with
+  // |value| <= displayRangeMm (width: 0 < value) and error below that, so one
+  // bad chip cannot squash the others; points left outside the range are
+  // counted in the legend. With summaryFit, the same in-range points are
+  // fitted (weighted by the per-chip fit errors) and the fit is drawn and
+  // listed in the legend. A track crosses several chips, so the chips are
+  // not fully independent and the fit errors and chi2 are optimistic.
+  void draw_stavechip_summary_pad(
+    const std::vector<TGraphErrors*>& graphs,
+    const std::vector<int>& populatedChips,
+    const std::vector<InputSpec>& inputs,
+    bool isSigma,
+    SummaryFit summaryFit,
+    double displayRangeMm,
+    const TString& fitHeader,
+    double xLow,
+    double xHigh,
+    const std::vector<double>& boundaryLines,
+    const TString& chipWord,
+    const TString& frameName,
+    const TString& xTitle,
+    const TString& yTitle,
+    std::vector<TObject*>& ownedObjects)
+  {
+    constexpr double leftMargin = 0.14;
+    constexpr double bottomMargin = 0.17;
+    constexpr double topMargin = 0.04;
+    gPad->SetLeftMargin(leftMargin);
+    gPad->SetRightMargin(0.03);
+    gPad->SetBottomMargin(bottomMargin);
+    gPad->SetTopMargin(topMargin);
+
+    auto in_display_range = [isSigma, displayRangeMm](double value, double error)
+    {
+      const bool valueInRange = isSigma
+        ? value > 0.0 && value <= displayRangeMm
+        : std::fabs(value) <= displayRangeMm;
+      return valueInRange && std::isfinite(error) && error > 0.0 &&
+             error <= displayRangeMm;
+    };
+
+    double yLow = std::numeric_limits<double>::max();
+    double yHigh = std::numeric_limits<double>::lowest();
+    for(const TGraphErrors* graph : graphs)
+    {
+      for(int point = 0; point < graph->GetN(); ++point)
+      {
+        const double value = graph->GetY()[point];
+        const double error = graph->GetEY()[point];
+        if(!in_display_range(value, error))
+        {
+          continue;
+        }
+
+        yLow = std::min(yLow, value - error);
+        yHigh = std::max(yHigh, value + error);
+      }
+    }
+
+    // Leave headroom so the points stay below the legend (one row per input,
+    // plus one per fit, plus the fit-window header).
+    const int numberOfInputs = static_cast<int>(inputs.size());
+    const bool hasFit = summaryFit != SummaryFit::none;
+    const double legendRowHeight = hasFit ? 0.05 : 0.06;
+    const int legendRows = numberOfInputs * (hasFit ? 2 : 1) + 1;
+    const double legendTop = 1.0 - topMargin - 0.02;
+    const double legendBottom = legendTop - legendRowHeight * legendRows;
+    double rangeLow = isSigma ? 0.0 : -displayRangeMm;
+    double rangeHigh = displayRangeMm;
+    if(yHigh >= yLow)
+    {
+      const double span = std::max(yHigh - yLow, 0.002);
+      rangeLow = yLow - 0.1 * span;
+      if(isSigma)
+      {
+        rangeLow = std::max(0.0, rangeLow);
+      }
+      const double frameHeight = 1.0 - topMargin - bottomMargin;
+      const double usableFraction = std::max(
+        0.3, (legendBottom - 0.02 - bottomMargin) / frameHeight);
+      rangeHigh = rangeLow + (yHigh - rangeLow) / usableFraction;
+    }
+
+    TH1D* frame = new TH1D(frameName.Data(), "", 100, xLow, xHigh);
+    frame->SetDirectory(nullptr);
+    ownedObjects.push_back(frame);
+    frame->SetMinimum(rangeLow);
+    frame->SetMaximum(rangeHigh);
+    frame->GetXaxis()->SetTitle(xTitle.Data());
+    frame->GetYaxis()->SetTitle(yTitle.Data());
+    frame->GetXaxis()->SetTitleSize(0.050);
+    frame->GetXaxis()->CenterTitle();
+    frame->GetYaxis()->SetTitleSize(0.050);
+    frame->GetXaxis()->SetLabelSize(0.045);
+    frame->GetYaxis()->SetLabelSize(0.045);
+    frame->GetYaxis()->SetTitleOffset(1.35);
+    frame->Draw("AXIS");
+
+    for(const double boundary : boundaryLines)
+    {
+      TLine* line = new TLine(boundary, rangeLow, boundary, rangeHigh);
+      ownedObjects.push_back(line);
+      line->SetLineColor(kGray);
+      line->SetLineStyle(3);
+      line->Draw();
+    }
+    if(!isSigma && rangeLow < 0.0 && rangeHigh > 0.0)
+    {
+      TLine* zeroLine = new TLine(xLow, 0.0, xHigh, 0.0);
+      ownedObjects.push_back(zeroLine);
+      zeroLine->SetLineColor(kGray + 2);
+      zeroLine->SetLineStyle(2);
+      zeroLine->Draw();
+    }
+
+    std::vector<TF1*> fits(numberOfInputs, nullptr);
+    std::vector<TString> fitTexts(numberOfInputs);
+    for(int input = 0; input < numberOfInputs; ++input)
+    {
+      TGraphErrors* graph = graphs[input];
+      if(graph->GetN() > 0)
+      {
+        graph->Draw("P");
+      }
+      if(!hasFit)
+      {
+        continue;
+      }
+
+      // Off-scale chips are left out so they cannot pull the fit.
+      TGraphErrors* fitted = new TGraphErrors();
+      ownedObjects.push_back(fitted);
+      for(int point = 0; point < graph->GetN(); ++point)
+      {
+        const double value = graph->GetY()[point];
+        const double error = graph->GetEY()[point];
+        if(in_display_range(value, error))
+        {
+          const int fittedPoint = fitted->GetN();
+          fitted->SetPoint(fittedPoint, graph->GetX()[point], value);
+          fitted->SetPointError(fittedPoint, 0.0, error);
+        }
+      }
+      // One more point than parameters, so ndf >= 1.
+      const bool isLine = summaryFit == SummaryFit::line;
+      const int minimumPoints = isLine ? 3 : 2;
+      if(fitted->GetN() < minimumPoints)
+      {
+        fitTexts[input] = Form("fit: too few %s", chipWord.Data());
+        continue;
+      }
+
+      // Both forms are linear in the parameters, so ROOT fits them exactly.
+      TF1* fit = new TF1(
+        Form("f_%s_in%d", frameName.Data(), input), isLine ? "pol1" : "pol0",
+        xLow, xHigh);
+      ownedObjects.push_back(fit);
+      fitted->Fit(fit, "QN0");
+      fit->SetLineColor(input_color(input));
+      fit->SetLineWidth(2);
+      fit->Draw("same");
+      fits[input] = fit;
+
+      // Parameters in um (the graphs are in mm); pol0 has only p0.
+      const double p0 = 1e3 * fit->GetParameter(0);
+      const double p0Error = 1e3 * fit->GetParError(0);
+      if(isLine)
+      {
+        fitTexts[input] = Form(
+          "%.2f#pm%.2f %+.3g(#pm%.2g) #times ID #mum, #chi^{2}/ndf %.0f/%d",
+          p0, p0Error, 1e3 * fit->GetParameter(1), 1e3 * fit->GetParError(1),
+          fit->GetChisquare(), fit->GetNDF());
+      }
+      else
+      {
+        fitTexts[input] = Form(
+          "const %.2f#pm%.2f #mum, #chi^{2}/ndf %.0f/%d",
+          p0, p0Error, fit->GetChisquare(), fit->GetNDF());
+      }
+    }
+
+    TLegend* legend = new TLegend(
+      leftMargin + 0.02, legendBottom, 0.95, legendTop);
+    ownedObjects.push_back(legend);
+    legend->SetBorderSize(0);
+    legend->SetFillStyle(0);
+    legend->SetTextFont(42);
+    legend->SetTextSize(hasFit ? 0.034 : 0.042);
+    legend->SetHeader(fitHeader.Data());
+    for(int input = 0; input < numberOfInputs; ++input)
+    {
+      const TGraphErrors* graph = graphs[input];
+      int offScale = 0;
+      for(int point = 0; point < graph->GetN(); ++point)
+      {
+        const double value = graph->GetY()[point];
+        offScale += value < rangeLow || value > rangeHigh;
+      }
+
+      TString entryText = Form(
+        "%s: %d of %d %s fitted", inputs[input].label.c_str(),
+        graph->GetN(), populatedChips[input], chipWord.Data());
+      if(offScale > 0)
+      {
+        entryText += Form(", %d off-scale", offScale);
+      }
+      legend->AddEntry(graph, entryText.Data(), "p");
+      if(hasFit)
+      {
+        legend->AddEntry(fits[input], fitTexts[input].Data(),
+                         fits[input] ? "l" : "");
+      }
+    }
+    legend->Draw();
+  }
+
+  // One page per layer: fitted mean (top) and width (bottom) of the local
+  // r-phi (left) and local z (right) residuals of every chip versus its
+  // stave-chip ID, one graph per input. The values are the per-chip fits of
+  // the CSV table: core Gaussian mu and sigma, or for INTT z the box centre
+  // and sqrt(L^2/12 + s^2) of the box fit. Unless staveChipFit is none,
+  // every graph gets the staveChipFit fit (constant or straight line).
+  // Returns false (no page) if the layer has no populated stave.
+  bool draw_stavechip_summary_page(
+    const DetectorConfig& config,
+    int layer,
+    SummaryFit staveChipFit,
+    const StaveHistogramMap& histogramMap,
+    const std::vector<InputSpec>& inputs,
+    PdfOutput& outputPdf)
+  {
+    int numberOfStaves = kStavesPerLayer[layer];
+    bool hasLayer = false;
+    for(const auto& entry : histogramMap)
+    {
+      if(entry.second.layer == layer)
+      {
+        hasLayer = true;
+        numberOfStaves = std::max(numberOfStaves, entry.second.stave + 1);
+      }
+    }
+    if(!hasLayer)
+    {
+      return false;
+    }
+
+    TString chipWord(config.panelLabel);
+    chipWord.ToLower();
+    const char* staveWord = &config == &kInttConfig ? "ladder" : "stave";
+    const int numberOfIds = config.chipsPerStave * numberOfStaves;
+    const double xLow = -0.5;
+    const double xHigh = numberOfIds - 0.5;
+    std::vector<double> boundaryLines;
+    for(int boundary = config.chipsPerStave; boundary < numberOfIds;
+        boundary += config.chipsPerStave)
+    {
+      boundaryLines.push_back(boundary - 0.5);
+    }
+    const TString xTitle = Form(
+      "%d #times %s + %s", config.chipsPerStave, staveWord, chipWord.Data());
+    const int numberOfInputs = static_cast<int>(inputs.size());
+    std::vector<TObject*> ownedObjects;
+
+    TCanvas* canvas = new TCanvas(
+      Form("c_%s_L%d_residual_vs_stavechip", config.outputPrefix, layer),
+      Form("%s layer %d: residual fits vs stave-chip ID", config.detectorName,
+           layer),
+      1600, 1000);
+    canvas->Divide(2, 2, 0.001, 0.001);
+    constexpr double pageTitleHeight = 0.055;
+    reserve_page_title_space(canvas, 4, pageTitleHeight);
+    for(const bool isZ : {false, true})
+    {
+      std::vector<TGraphErrors*> meanGraphs;
+      std::vector<TGraphErrors*> sigmaGraphs;
+      std::vector<int> populatedChips;
+      for(int input = 0; input < numberOfInputs; ++input)
+      {
+        const StaveChipGraphs graphs = make_stavechip_graphs(
+          config, layer, isZ, input, histogramMap);
+        ownedObjects.push_back(graphs.mean);
+        ownedObjects.push_back(graphs.sigma);
+        meanGraphs.push_back(graphs.mean);
+        sigmaGraphs.push_back(graphs.sigma);
+        populatedChips.push_back(graphs.populatedChips);
+      }
+
+      const char* coordinateName = isZ ? "z" : "rphi";
+      const char* residualLabel = isZ ? "Z" : "r-#phi";
+      const double displayRangeMm =
+        isZ ? config.zDisplayRangeMm : config.rphiDisplayRangeMm;
+      const bool useBoxFit = isZ && config.zUsesBoxFit;
+      // Fit window of every point (fit_core_gaussian or fit_box_gaussian).
+      const TString fitHeader = useBoxFit
+        ? TString(Form("Box #otimes Gaussian: refit centre #pm %g L",
+                       kBoxFitWindowScale))
+        : TString(Form("Core Gaussian: seed #pm%g mm, refit #mu #pm %g#sigma",
+                       isZ ? config.zFitRangeMm : config.rphiFitRangeMm,
+                       kCoreFitSigmaWindow));
+      const TString meanTitle = useBoxFit
+        ? TString(Form("box centre of local %s residual [mm]", residualLabel))
+        : TString(Form("Gaussian #mu of local %s residual [mm]",
+                       residualLabel));
+      const TString sigmaTitle = useBoxFit
+        ? TString(Form("#sqrt{L^{2}/12 + s^{2}} of local %s residual [mm]",
+                       residualLabel))
+        : TString(Form("Gaussian #sigma of local %s residual [mm]",
+                       residualLabel));
+      const int column = isZ ? 2 : 1;
+      canvas->cd(column);
+      draw_stavechip_summary_pad(
+        meanGraphs, populatedChips, inputs, false, staveChipFit,
+        displayRangeMm, fitHeader, xLow, xHigh, boundaryLines,
+        chipWord + "s",
+        Form("h_frame_%s_L%d_%s_vs_stavechip_mean", config.outputPrefix,
+             layer, coordinateName),
+        xTitle, meanTitle, ownedObjects);
+      canvas->cd(column + 2);
+      draw_stavechip_summary_pad(
+        sigmaGraphs, populatedChips, inputs, true, staveChipFit,
+        displayRangeMm, fitHeader, xLow, xHigh, boundaryLines,
+        chipWord + "s",
+        Form("h_frame_%s_L%d_%s_vs_stavechip_sigma", config.outputPrefix,
+             layer, coordinateName),
+        xTitle, sigmaTitle, ownedObjects);
+    }
+
+    draw_page_title(
+      canvas, pageTitleHeight,
+      Form("%s layer %d: mean and width of the local residuals per %s",
+           config.detectorName, layer, chipWord.Data()));
+    print_and_delete_page(
+      canvas, outputPdf,
+      Form("%s_residual_vs_stavechip_L%d.png", config.outputPrefix, layer),
+      ownedObjects);
+    return true;
+  }
+
+  // One page per populated layer of the detector.
+  int draw_stavechip_summary_pages(
+    const DetectorConfig& config,
+    const StaveHistogramMap& histogramMap,
+    const std::vector<InputSpec>& inputs,
+    SummaryFit staveChipFit,
+    PdfOutput& outputPdf)
+  {
+    int pages = 0;
+    for(int layer = config.firstLayer;
+        layer < config.firstLayer + config.numberOfLayers; ++layer)
+    {
+      pages += draw_stavechip_summary_page(
+        config, layer, staveChipFit, histogramMap, inputs, outputPdf);
+    }
+
+    return pages;
   }
 
   // One page: <-DCA> vs track phi (top) and the -DCA distributions (bottom),
@@ -1902,15 +2327,16 @@ namespace
     bool includeGaussianFit,
     bool drawHistogramsAsMarkers,
     bool normalizeToUnitArea,
-    const char* outputPdf,
+    PdfOutput& outputPdf,
     const char* outputPng)
   {
     std::vector<TObject*> ownedObjects;
     constexpr int canvasColumns = 2;
     constexpr int canvasRows = 2;
+    // Wider than tall, so the page fits the landscape PDF (see PdfOutput).
     TCanvas* canvas = new TCanvas(
       "c_vertex_residuals", "Track-to-vertex residuals",
-      450 * canvasColumns, 500 * canvasRows);
+      800 * canvasColumns, 500 * canvasRows);
     canvas->Divide(canvasColumns, canvasRows, 0.001, 0.001);
     constexpr double pageTitleHeight = 0.055;
     reserve_page_title_space(
@@ -1956,10 +2382,7 @@ namespace
 //
 // writeToCsv: writes residual_fits_<label>.csv per input into
 //   csvOutputDirectory, one row per (layer, stave, chip, coordinate), read by
-//   compare_runs.py. Every stave/ladder also gets one row per coordinate
-//   with chip = -1 for the sum of all its chips/sensors, fitted like the
-//   chips (the "combined" panel of the plots), to tell whole-stave from
-//   single-chip shifts. If any input has a usable track_ntp, every table also
+//   compare_runs.py. If any input has a usable track_ntp, every table also
 //   gets detector=VERTEX rows (layer = stave = -1, coord = dca_xy or dca_z).
 //   Their chip id is the track-phi bin: chip = -1 for the integrated
 //   distribution and chip = 0..13 for the phi bins over [-pi, pi).
@@ -1974,26 +2397,37 @@ namespace
 //   chi2 of the binned Poisson fit.
 //   trunc_mean_mm / trunc_mean_err_mm hold the unbinned mean of the residuals
 //   inside the histogram range (+-2 mm for VERTEX).
-//   min_pt_gev is the track pT cut of the row: residualMinimumPtGeV for
-//   MVTX/INTT rows, vertexMinimumPtGeV for VERTEX rows.
 //   With track_ntp, vertex_phi_fit_<label>.csv holds the fit of
 //   A*sin(phi - phi0) + c to <-DCA_xy> vs track phi: A is the transverse
 //   offset between the event vertex and the point the tracks point back to,
 //   and A*(cos phi0, sin phi0) is that offset (vertex minus track origin).
-// makePlots: writes outputPdf (plus PNGs) with two pages per populated stave
+// makePlots: writes <outputPdf without .pdf>_<label1>_<label2>....pdf (or
+//   <outputPdf without .pdf>_longfilelist.pdf for names over 200
+//   characters; PNG names carry no labels) with two pages per populated stave
 //   (local r-phi and local Z) and, last, a track-to-vertex residual page with
 //   <-DCA> vs track phi (with the A*sin(phi - phi0) + c fit for -DCA_xy) and
 //   the -DCA distributions. Each panel overlays one curve per input. With
 //   includeGaussianFit the legend shows the same fit that is written to the
 //   CSV.
+// savePngs: with makePlots, also writes every PDF page as a PNG into the
+//   working directory (names carry no labels, so a later run overwrites
+//   them). Off by default: only the PDF is written.
+// drawStaveChipSummary: with makePlots, starts the PDF with one page per
+//   populated layer: the fitted mean (top) and width (bottom) of the local
+//   r-phi (left) and local Z (right) residuals of every chip versus its
+//   stave-chip ID (9*stave + chip for MVTX, 4*ladder + sensor for INTT), one
+//   graph per input. These are the CSV fits: core Gaussian mu and sigma, or
+//   for INTT Z the box centre and sqrt(L^2/12 + s^2). Chips without
+//   fit_status ok have no point.
+//   With fitSummary, every graph gets a staveChipFit fit, "pol0" (constant:
+//   the weighted mean of the chips, chi2/ndf measures their scatter) or
+//   "pol1" (straight line), one per layer and input over all staves,
+//   weighted by the per-chip fit errors of the chips inside the display
+//   range. The parameters (um) and chi2/ndf are listed in the legend.
 // vertexMinimumPtGeV: minimum track pT for the track-to-vertex residuals.
-// residualMinimumPtGeV: minimum track pT for the MVTX/INTT residuals in ntp.
-//   It needs a track_pt branch in ntp (not written by MakeMilleFiles as of
-//   this version); a cut above 0 without it is an error. At 0 the branch is
-//   not read. Last parameter, so existing positional calls are unchanged.
 void plot_fits_overlaid_stavechip(
   //const char* listfile = "ntuple_list.txt",
-  const char* listfiles = "ntuple_list_short.txt",
+  const char* listfiles = "filelist1.txt:Iter1, filelist2.txt:Iter2",
   const char* outputPdf = "silicon_stavechip_residual_fits.pdf",
   bool includeGaussianFit = false,
   bool drawHistogramsAsMarkers = true,
@@ -2002,7 +2436,10 @@ void plot_fits_overlaid_stavechip(
   bool writeToCsv = true,
   const char* csvOutputDirectory = ".",
   bool makePlots = true,
-  double residualMinimumPtGeV = 0.0)
+  bool drawStaveChipSummary = true,
+  bool fitSummary = true,
+  const char* staveChipFit = "pol0",
+  bool savePngs = false)
 {
   gROOT->SetBatch(kTRUE);
   gStyle->SetOptStat(0);
@@ -2013,6 +2450,27 @@ void plot_fits_overlaid_stavechip(
     std::cerr << "ERROR: writeToCsv and makePlots are both false; nothing "
                  "to do." << std::endl;
     return;
+  }
+
+  SummaryFit staveChipSummaryFit = SummaryFit::none;
+  if(fitSummary)
+  {
+    const std::string fitName = staveChipFit ? staveChipFit : "";
+    if(fitName == "pol0")
+    {
+      staveChipSummaryFit = SummaryFit::constant;
+    }
+    else if(fitName == "pol1")
+    {
+      staveChipSummaryFit = SummaryFit::line;
+    }
+    else
+    {
+      std::cerr << "ERROR: staveChipFit must be \"pol0\" (constant) or "
+                   "\"pol1\" (straight line), not '" << fitName << "'"
+                << std::endl;
+      return;
+    }
   }
 
   const std::vector<InputSpec> inputs = parse_input_specs(listfiles);
@@ -2044,17 +2502,8 @@ void plot_fits_overlaid_stavechip(
       delete_all_histograms(histogramMap, vertexHistograms);
       return;
     }
-    if(residualMinimumPtGeV > 0.0 && !ntp.GetBranch("track_pt"))
-    {
-      std::cerr << "ERROR: residualMinimumPtGeV = " << residualMinimumPtGeV
-                << " needs branch 'track_pt' in tree ntp, which "
-                << inputs[input].listfile << " does not have." << std::endl;
-      delete_all_histograms(histogramMap, vertexHistograms);
-      return;
-    }
 
-    fill_silicon_histograms(
-      &ntp, input, numberOfInputs, residualMinimumPtGeV, histogramMap);
+    fill_silicon_histograms(&ntp, input, numberOfInputs, histogramMap);
 
     // track_ntp is optional: without it only this input's vertex results stay
     // empty. MakeMilleFiles fills it only when the event-vertex constraint
@@ -2075,10 +2524,10 @@ void plot_fits_overlaid_stavechip(
     }
   }
   const bool hasVertexResiduals = inputsWithVertexResiduals > 0;
-  build_stave_sums(histogramMap, numberOfInputs);
 
-  // One set of fits feeds both the CSV and the plot legends.
-  if(writeToCsv || (makePlots && includeGaussianFit))
+  // One set of fits feeds the CSV, the plot legends and the summary pages.
+  if(writeToCsv ||
+     (makePlots && (includeGaussianFit || drawStaveChipSummary)))
   {
     fit_all_histograms(histogramMap, vertexHistograms, numberOfInputs);
   }
@@ -2110,8 +2559,7 @@ void plot_fits_overlaid_stavechip(
 
   if(writeToCsv &&
      (!write_csv_tables(inputs, histogramMap, vertexHistograms,
-                        hasVertexResiduals, residualMinimumPtGeV,
-                        vertexMinimumPtGeV, csvOutputDirectory) ||
+                        hasVertexResiduals, csvOutputDirectory) ||
       (hasVertexResiduals &&
        !write_phi_modulation_tables(
          inputs, vertexHistograms, csvOutputDirectory))))
@@ -2122,26 +2570,38 @@ void plot_fits_overlaid_stavechip(
 
   if(makePlots)
   {
-    const TString pdfName(outputPdf);
-    TCanvas pdfBookend("c_silicon_stavechip_bookend", "", 1, 1);
-    pdfBookend.Print((pdfName + "[").Data());
+    const std::string pdfPath = labelled_pdf_name(outputPdf, inputs);
+    PdfOutput pdfOutput{pdfPath, false, savePngs};
+
+    int summaryPages = 0;
+    if(drawStaveChipSummary)
+    {
+      summaryPages += draw_stavechip_summary_pages(
+        kMvtxConfig, histogramMap, inputs, staveChipSummaryFit, pdfOutput);
+      summaryPages += draw_stavechip_summary_pages(
+        kInttConfig, histogramMap, inputs, staveChipSummaryFit, pdfOutput);
+    }
 
     const int mvtxStaves = draw_detector_pages(
-      kMvtxConfig, histogramMap, inputs, pdfName.Data(), residualMinimumPtGeV,
-      includeGaussianFit, drawHistogramsAsMarkers, normalizeToUnitArea);
+      kMvtxConfig, histogramMap, inputs, pdfOutput, includeGaussianFit,
+      drawHistogramsAsMarkers, normalizeToUnitArea);
     const int inttStaves = draw_detector_pages(
-      kInttConfig, histogramMap, inputs, pdfName.Data(), residualMinimumPtGeV,
-      includeGaussianFit, drawHistogramsAsMarkers, normalizeToUnitArea);
+      kInttConfig, histogramMap, inputs, pdfOutput, includeGaussianFit,
+      drawHistogramsAsMarkers, normalizeToUnitArea);
     const int populatedStaves = mvtxStaves + inttStaves;
     if(hasVertexResiduals)
     {
       draw_vertex_residual_page(
         vertexHistograms, inputs, vertexMinimumPtGeV, includeGaussianFit,
-        drawHistogramsAsMarkers, normalizeToUnitArea, pdfName.Data(),
+        drawHistogramsAsMarkers, normalizeToUnitArea, pdfOutput,
         "vertex_residual_fits.png");
     }
 
-    pdfBookend.Print((pdfName + "]").Data());
+    if(pdfOutput.isOpen)
+    {
+      TCanvas pdfBookend("c_silicon_stavechip_bookend", "", 1, 1);
+      pdfBookend.Print((pdfOutput.path + "]").c_str());
+    }
 
     if(populatedStaves == 0)
     {
@@ -2150,16 +2610,18 @@ void plot_fits_overlaid_stavechip(
     }
     else
     {
-      std::cout << "Wrote " << 2 * populatedStaves << " pages for "
+      std::cout << "Wrote " << summaryPages + 2 * populatedStaves
+                << " pages (" << summaryPages
+                << " stave-chip summary pages) for "
                 << mvtxStaves << " populated MVTX and " << inttStaves
                 << " populated INTT staves from " << numberOfInputs
-                << " input list(s) to " << outputPdf << std::endl;
+                << " input list(s) to " << pdfPath << std::endl;
     }
     if(hasVertexResiduals)
     {
       std::cout << "Wrote 1 track-to-vertex residual page from "
                 << inputsWithVertexResiduals << " of " << numberOfInputs
-                << " input list(s) to " << outputPdf << std::endl;
+                << " input list(s) to " << pdfPath << std::endl;
     }
   }
 
