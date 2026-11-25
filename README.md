@@ -1,29 +1,89 @@
-# Silicon Tracking Diagnostics
+# SAGA: Silicon Alignment with Generative Agents
 
 **Automated chip-by-chip (sensor level for INTT) track residual diagnostics
 for different alignment iterations along with an Agentic AI framework for
 assisting in root-cause analysis**
 
-The framework compares local residual distributions, and the
-track-to-vertex residuals (−DCA_xy, −DCA_z), between productions
-(alignment iterations, runs, software builds), flags chips and sensors whose
-residuals changed, and helps a reviewer investigate **candidate causes** in
-sPHENIX `coresoftware`, ACTS and Millepede-II.
+This framework measures the drift of sensors of the sPHENIX silicon tracker
+(MVTX and INTT) across different runs, alignment iterations and software
+updates and investigates the cause of the drifts. Deterministic,
+reproducible statistical tests flag the sensor drifts and record details in a
+CSV file. A team of AI agents then uses the CSV file to investigate the root
+cause, tracing each change through the sPHENIX reconstruction code, its
+commit history and the ACTS and Millepede-II documentation. The
+result is a set of ranked, evidence-backed hypotheses, each with a concrete
+test the reviewer can run to confirm it.
 
-It also monitors **run-by-run stability**. With one fit table per run, every
-MVTX chip and INTT sensor gets a time series of its residual mean and width.
-Three change-point methods (CUSUM, PELT and Bayesian online change-point
-detection) find the runs where a sensor, a stave or a whole layer moved, or
-where its resolution changed. Layer-wide common-mode shifts are separated
-from single-sensor movements. Like the comparison, this step is deterministic
-and uses no AI. See [Run-by-run stability](#run-by-run-stability).
+## Overview
 
-What it is: statistical residual comparison with fixed, reproducible
-criteria, plus AI agents that group the flags and propose evidence-backed
-hypotheses. What it is not: an automatic root-cause finder. The agents
-produce candidate causes; a cause is established only when the reviewer
-confirms it (for example by rerunning with a commit reverted or an old
-alignment file) and records it with `review decide`.
+### Motivation
+
+- **Alignment determines tracking quality.** Track momentum, DCA and
+  vertexing depend strongly on the position of the sensors relative to the
+  ideal geometry, and their position and orientation must be accounted for
+  at the micrometer level. A sensor displaced from its assumed position
+  biases every track that crosses it.
+- **Manual inspection is the bottleneck.** Each
+  production (an alignment iteration, a run or a software build) yields 1550
+  residual distributions: 432 MVTX chips and 224 INTT sensors in two
+  coordinates (1312), 104 stave and ladder aggregates (208), and 30
+  track-to-vertex distributions, or about 3100 means and widths in total. The
+  software that produces them (`coresoftware`, ACTS, Millepede-II) changes
+  frequently. Therefore manually inspecting the changes is time consuming,
+  labor intensive and error-prone.
+
+### What is measured
+
+- **Residual.** For each hit, the residual is the measured position minus
+  the position predicted by the fitted track (`localMeas − localState` in
+  `ActsAlignmentStates.cc`), in the sensor's two local coordinates (r-φ
+  and z).
+- **Expected behaviour.** For a well-aligned sensor, the residual
+  distribution is centred at zero and its width reflects the detector's
+  intrinsic resolution (MVTX pixels of about 27 × 29 µm; INTT strips with
+  78 µm pitch, 16 or 20 mm long) combined with the track's own uncertainty.
+  The track-to-vertex residuals (−DCA_xy, −DCA_z) should be centred at zero
+  and independent of track direction (φ).
+- **Drift detection.** Relative to a reference production, a sensor is
+  flagged when its mean shifts by more than 1.96 standard errors *and* by
+  more than a physically meaningful minimum (MVTX 5 µm; INTT 20 µm in r-φ and
+  1 mm in z; vertex 10/20 µm), or when its width changes by more than 20%.
+  Widths and means can be compared between runs, productions and alignment
+  iterations, or between data and simulation. A shift in the mean reveals a
+  sensor displacement, and a change in width reveals a change in resolution.
+
+### Design
+
+- **Deterministic core.** Fitting (ROOT macro), comparison and flagging
+  (`stdiag.compare_runs`), validation of the triage output against the
+  flags, orchestration of the agents, and run-by-run monitoring are all
+  fixed and determinstic code with fixed thresholds. They are reproducible, configurable, run locally, and
+  do not use AI. This makes the drift detection robust against AI hallucinations, data manipulations and keeps the flags manually verifiable.
+- **Agentic root-cause analysis.** A triage agent groups the flags into
+  coherent findings such as chip-level, stave level or layer level misalignments. A coresoftware expert agent proposes ranked hypotheses citing
+  the responsible commit, file and line, and a tracking expert checks each
+  one against the ACTS and Millepede-II documentation, with the two experts
+  verifying each other's claims. The agents work read-only, and propose hypothesis for the causes along with checks to verigy them. The human reviewer team then confirms it, and utilizes the AI suggestions to strategize the next step.
+- **Time-series monitoring.** Given one fit table per run, each sensor's
+  residual mean and width form a time series. Three complementary
+  change-point methods (CUSUM, PELT and Bayesian online change-point
+  detection) identify the runs where a sensor, stave or layer moved or its
+  resolution changed, and distinguish layer-wide (common-mode) shifts from local
+  ones. See [Run-by-run stability](#run-by-run-stability).
+
+### Evaluation
+
+Synthetic data with known, injected changes were used for evaluation. Details are in
+[Evaluation layer](#evaluation-layer).
+
+- **Fitting and comparison:** every row matches the injected truth
+  (1312/1312 across 20 random seeds; 1550/1550 end to end from simulated
+  ROOT files across 9 seeds).
+- **Run-by-run monitoring:** 30/30 scenarios pass. That is 15 series with 15
+  injected effects each, including decoys that must not be flagged, plus 15
+  series with no changes, which produce zero detections.
+- **Agent infrastructure:** output validation and orchestration are covered
+  by unit tests with scripted agent responses, run in CI.
 
 ## Architecture
 
@@ -67,7 +127,7 @@ notebooks/   run_stability_synthetic.ipynb (change-point methods on the
              synthetic run series; outputs in notebooks/output/, local only)
 tests/       pytest suite (no AI calls)
 evals/       evaluation layer for the AI agents (see evals/README.md)
-inputs/      your residual_fits_<name>.csv tables to compare (local only;
+inputs/      residual_fits_<name>.csv tables to compare (local only;
              one synthetic example pair is committed)
 runs/        one folder per comparison, <a>_vs_<b> (local only)
 ```
@@ -75,10 +135,23 @@ runs/        one folder per comparison, <a>_vs_<b> (local only)
 ## Install and configure
 
 ```bash
-pip install -e ".[dev]"          # add ",api" for the Anthropic API triage backend
-python -m stdiag.fetch_tracking_docs   # ACTS 45.0.0 + Millepede-II snapshot into tracking_docs/
-cp maps/labels.example.csv labels.csv  # then fill in per-label configuration
+# Next two lines optional but recommended: virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip
+pip install -e ".[dev]"
+python -m stdiag.fetch_tracking_docs
+cp maps/labels.example.csv labels.csv
 ```
+
+This creates a virtual environment in `.venv/` (git-ignored), activates it,
+and installs the package and pytest into it; it needs Python 3.10 or newer
+(`python3 --version`). Run `source .venv/bin/activate` again in every new
+terminal, and `deactivate` to leave it. Use `".[dev,api]"` to add the
+Anthropic API triage backend. The last two lines download the ACTS 45.0.0 and
+Millepede-II documentation into `tracking_docs/` for the tracking expert, and
+create a `labels.csv` to fill in with the configuration of each label.
 
 The AI steps use the Claude Code CLI (`claude`, logged in). Three locations
 can be set with environment variables:
@@ -89,8 +162,7 @@ can be set with environment variables:
 | `STDIAG_TRACKING_DOCS` | `tracking_docs/` in this repository (git-ignored) | tracking expert |
 | `STDIAG_RUNS_DIR` | `runs/` in this repository (git-ignored) | `compare_runs`, which creates `<a>_vs_<b>/` folders there |
 
-`coresoftware` is not part of this repository; point the variable at your
-checkout (full history needed for the experts).
+`coresoftware` is not part of this repository; point the variable to the local coresoftware checkout of https://github.com/sPHENIX-Collaboration/coresoftware (full history needed for the experts).
 
 ## Input format
 
@@ -112,11 +184,12 @@ writes exactly these branches and is a working example of the format.
 
 ## Walkthrough
 
-Run from the repository root. The fit tables you compare go in `inputs/`;
+Run from the repository root. The fit tables to compare go in `inputs/`;
 each comparison gets its own folder, `runs/<a>_vs_<b>/`, which every later
 step writes into. Nothing in `inputs/` or `runs/` is committed. Inputs to the
 macro are given as `list:label` pairs; labels name the productions in every
-report. The commands have no `#` comments, so they paste into zsh as they are.
+report. The commands paste into zsh as they are; for the commented example
+pair below, run `setopt interactivecomments` first.
 
 **1. Fits** (ROOT, local). The macro writes `residual_fits_<label>.csv` per
 label into `inputs/` and the plots into the current folder. The first command
@@ -133,28 +206,28 @@ If you already have the CSV files, skip this step. Any name of the form
 
 ### Compare your own CSV files
 
-Suppose `plot_fits_overlaid_stavechip.C` (step 1) gave you
-`residual_fits_Iter{A}.csv` and `residual_fits_Iter{B}.csv`, for example
+Suppose `plot_fits_overlaid_stavechip.C` (step 1) generated
+`residual_fits_Iter{A}.csv` and `residual_fits_Iter{B}.csv`. For example
 `residual_fits_Iter0.csv` and `residual_fits_Iter1.csv`. Put them in the
-`inputs/` folder: step 1 writes them there directly; otherwise copy them
-there. `Iter{A}` is the reference. Then, from the repository root:
-
-**2. Set the two names once** and check that both files are there.
+`inputs/` folder. . Then, from the repository root set the variables:
 
 ```bash
-cd silicon-tracking-diagnostics
+cd saga-silicon-alignment
 export PYTHONPATH=$PWD
-A=0
-B=1
+#residual_fits_Iter{A}.csv acts as the reference dataset from which the deviations in residual_fits_Iter{B}.csv are evaluated
+
+A=0 #set according to the actual filename
+B=1 #set according to the actual filename
+
 RUN=runs/Iter${A}_vs_Iter${B}
 ls inputs/residual_fits_Iter$A.csv inputs/residual_fits_Iter$B.csv
 ```
 
 Any name of the form `residual_fits_<name>.csv` works; with other names,
-write `inputs/residual_fits_<name>.csv` in step 3 and `runs/<a>_vs_<b>` for
+use `inputs/residual_fits_<name>.csv` in step 3 and `runs/<a>_vs_<b>` for
 `RUN`.
 
-**3. Compare (local, no AI).** This creates `$RUN`.
+**2. Compare (local, no AI).** This creates `$RUN`.
 
 ```bash
 python -m stdiag.compare_runs inputs/residual_fits_Iter$A.csv inputs/residual_fits_Iter$B.csv
@@ -169,9 +242,9 @@ not-comparable list: an entry out of range in one input can hide a large
 shift. Running this step again deletes `$RUN` and starts again, including any
 triage and review files from the earlier run.
 
-**4. Triage (AI).** First see what would be sent, then run it. The second
-command costs about $0.50 on your Claude Code login and sends the flag summary
-to Anthropic; check collaboration policy before using real data.
+**3. Triage (AI).** The first command is a preview of the prompt that would be sent. The second
+command costs about $0.50 on Claude Code login and sends the flag summary
+to Anthropic; adhere to collaboration policy while using real data.
 `--backend api` uses an API key instead.
 
 ```bash
@@ -197,7 +270,10 @@ python -m stdiag.triage_agent $RUN/flags_*.csv $RUN/summary_*.json --backend cla
 - `--usage-out` writes the model that served the run, the effort, tokens,
   cost and time to a JSON file (claude-code backend only).
 
-**5. Review.**
+**4. Review.**
+
+Work through the triage findings (F1, F2, …) one at a time. Only `ask`
+contacts Anthropic; the other commands run locally.
 
 ```bash
 python -m stdiag.review list $RUN/findings_*.json
@@ -207,7 +283,25 @@ python -m stdiag.review ask $RUN/findings_*.json F1
 python -m stdiag.review decide $RUN/findings_*.json F1 accept --note "confirmed by ..."
 ```
 
-`ask` takes the commits from `labels.csv` in the repository root, or from
+- `list` shows all findings by priority, with their review status (`open`
+  or your last decision) and whether the expert agents have been asked.
+- `show F1` prints one finding as the triage wrote it (use F{i} for the {ith} finding), with the matching
+  rows of the flags table (Δμ, significance, widths, entries, fit status),
+  so that the grouping and numbers can be manually checked.
+- `ask F1 --dry-run` prints exactly what would be sent to the experts,
+  including the commit range, without sending anything.
+- `ask F1` starts the expert dialogue. The coresoftware expert proposes
+  ranked hypotheses (commit, file and line, mechanism, test), and the
+  tracking expert checks them against the ACTS and Millepede-II
+  documentation, for up to 3 turns each per round. The transcript is
+  written to `dialogue_*.md` next to the findings file.
+- `decide F1 accept|reject|needs-info --note "..."` records your conclusion
+  and its evidence in `review_*.json` and `review_*.md`. It checks nothing,
+  so use the note to say how you confirmed the cause, for example by
+  rerunning with the suspect commit reverted.
+
+`ask` takes the commit range from `--from REV --to REV`, otherwise from the
+`coresoftware_commit` of both labels in `labels.csv`, otherwise from
 `--since YYYY-MM-DD`. Until the experts' read-only limits have been tested,
 point `STDIAG_CORESOFTWARE` at a throwaway clone of coresoftware. Use
 `python -m stdiag.review continue $RUN/findings_*.json F1 --note "..."` to
@@ -221,19 +315,32 @@ reference. Each comparison gets its own `runs/` folder.
 `inputs/` also holds two synthetic tables, `residual_fits_example_iter0.csv`
 and `residual_fits_example_iter1.csv`: one MVTX stave and one INTT ladder with
 known shifts (see `synthetic/stavechip_demo/`). To see what each step gives
-before using your own files, run:
+before using your own files, run the commands below. In zsh, run
+`setopt interactivecomments` first so that the `#` comment lines are
+accepted.
 
 ```bash
-cd silicon-tracking-diagnostics
+# Go to the repository and make stdiag importable
+cd saga-silicon-alignment
 export PYTHONPATH=$PWD
+# Folder this comparison writes to
+R=runs/example_iter0_vs_example_iter1
+# Compare the two tables (local, no AI)
 python -m stdiag.compare_runs inputs/residual_fits_example_iter0.csv inputs/residual_fits_example_iter1.csv
-ls runs/example_iter0_vs_example_iter1
-less runs/example_iter0_vs_example_iter1/report_example_iter0_vs_example_iter1.md
-python -m synthetic.stavechip_demo.check_demo runs/example_iter0_vs_example_iter1/flags_example_iter0_vs_example_iter1.csv
-python -m stdiag.triage_agent runs/example_iter0_vs_example_iter1/flags_example_iter0_vs_example_iter1.csv runs/example_iter0_vs_example_iter1/summary_example_iter0_vs_example_iter1.json --backend claude-code --dry-run | less
-python -m stdiag.triage_agent runs/example_iter0_vs_example_iter1/flags_example_iter0_vs_example_iter1.csv runs/example_iter0_vs_example_iter1/summary_example_iter0_vs_example_iter1.json --backend claude-code
-python -m stdiag.review list runs/example_iter0_vs_example_iter1/findings_example_iter0_vs_example_iter1.json
-python -m stdiag.review show runs/example_iter0_vs_example_iter1/findings_example_iter0_vs_example_iter1.json F1
+# List the output files (flags, report, summary)
+ls $R
+# Read the comparison report
+less $R/report_*.md
+# Check the flags against the known injected shifts (this example only)
+python -m synthetic.stavechip_demo.check_demo $R/flags_*.csv
+# Preview what the AI triage would receive; nothing is sent
+python -m stdiag.triage_agent $R/flags_*.csv $R/summary_*.json --backend claude-code --dry-run | less
+# Run the AI triage (about $0.50; sends the synthetic summary to Anthropic)
+python -m stdiag.triage_agent $R/flags_*.csv $R/summary_*.json --backend claude-code
+# List the findings
+python -m stdiag.review list $R/findings_*.json
+# Show finding F1 with its flags-table rows
+python -m stdiag.review show $R/findings_*.json F1
 ```
 
 What you should get:
@@ -463,8 +570,8 @@ have an eval in `evals/` that is built but not yet run. Details are in
 |---|---|---|---|
 | **Steps without AI** (fits, comparison) | Synthetic data with known injected changes → fit macro → `compare_runs` → `check_against_truth` / `check_demo` | Every row's status (flagged, unchanged, not comparable) matches the injected truth; statistically limited rows may go either way | Fit tables: 1312/1312 rows, 2 comparisons, 20 seeds. From ROOT files: 1550/1550 rows, reference seed and seeds 1–8. Stave/chip demo: current fit passes; the old settings fail in the 4 expected entries |
 | **Run-by-run stability** (no AI) | 60-run synthetic series of fit tables (`make_synthetic_run_series`) with 15 injected effects: chip, sensor, stave, half-layer and whole-layer steps, a transient, a drift, a one-run outlier, a bad run, a width change, and decoys that must not be reported (3 µm step, sub-threshold drift, 5%-luminosity runs, a missing ladder) → `run_stability` → `check_run_stability` | Every injection found with its expected class within ±2 runs (±6 for drift start and end); decoys give nothing; at most 2 unexplained change points per scan; a series with no changes (`--null`) gives none | 15 seeds × (injected + null): 30/30 pass. Null series: 0 change points in all 15; before the final criteria the methods fire 1.3 (BOCPD), 1.2 (PELT) and 0.9 (CUSUM) times per scan (target about 1). Injected series: 1 unexplained change point in total (seed 3: a half-layer step labelled a drift starting 3 runs early) |
-| **Code around the agents** | `pytest` with scripted agent replies (no AI) | Triage output validation (missing or invented entries, invalid groups, no JSON), no truth in the triage prompt, dialogue routing (convergence, turn limits, questions to the reviewer, missing status blocks), run folders | 34 tests pass; they also run in CI |
-| **AI triage** (`evals/triage/`) | 21 synthetic cases × 2 repetitions: no change, stave-wide, single chip or sensor, width, mean and width, missing ladder, sub-threshold and low-statistics decoys, two mixed. Each runs the real comparison and the real triage; the runner refuses to start until the reviewer approves a checksum of the harness | Graded by code from `findings_*.json`. A run passes if validation passed, every injected change that produces flags is matched by one finding (≥80% overlap both ways) in the expected group, and there are no invented or merged findings. Recall, group accuracy, cost and time are also recorded | Grader self-test passes on all 21 cases: a perfect answer passes everywhere, and empty or lumped-together answers fail where they should. **The benchmark has not been run yet, so there is no pass rate.** Two earlier live runs on the synthetic Iter1/Iter2 comparisons grouped every injected change correctly; that is too few to quote an accuracy, and 42 runs will still carry about ±15 percentage points |
+| **Code around the agents** | `pytest` with scripted agent replies (no AI) | Triage output validation (missing or invented entries, invalid groups, no JSON), no truth in the triage prompt, dialogue routing (convergence, turn limits, questions to the reviewer, missing status blocks), run folders | All 60 pytest tests pass, 25 of them on the triage output and the review and dialogue logic; they also run in CI |
+| **AI triage** (`evals/triage/`) | 21 synthetic cases × 2 repetitions: no change, stave-wide, single chip or sensor, width, mean and width, missing ladder, sub-threshold and low-statistics decoys, two mixed. Each runs the real comparison and the real triage; the runner refuses to start until the reviewer approves a checksum of the harness | Graded by code from `findings_*.json`. A run passes if validation passed, every injected change that produces flags is matched by one finding (≥80% overlap both ways) in the expected group, and there are no invented or merged findings. Recall, group accuracy, cost and time are also recorded | Grader self-test passes on all 21 cases: a perfect answer passes everywhere, and empty or lumped-together answers fail where they should. The benchmark has not been run yet, so there is no pass rate. Two earlier live runs on the synthetic Iter1/Iter2 comparisons grouped every injected change correctly; that is too few to quote an accuracy, and 42 runs will still carry about ±15 percentage points |
 
 Evals for the coresoftware expert (finds the causing commit), the tracking
 expert (verdicts), the permission limits and the expert dialogue are planned
@@ -473,10 +580,11 @@ but not built.
 ## Try the whole pipeline on synthetic data
 
 No real data is needed. One command makes synthetic ROOT files with known
-injected misalignments and runs every step on them:
+injected misalignments and runs every step on them. Activate the virtual
+environment from [Install and configure](#install-and-configure) first
+(`source .venv/bin/activate`).
 
 ```bash
-pip install -e ".[dev]"            # numpy, pandas, pytest
 synthetic/run_full_pipeline.sh     # needs ROOT (root on PATH); ~20 s, nothing leaves the machine
 ```
 
@@ -674,7 +782,7 @@ current triage prompt, both experts and their dialogue (including whether
 the read-only and web-domain limits hold in practice), the API backend, and
 `run_stability` on any real run series.
 
-## Limitations
+## Notes on interpretation
 
 - INTT z uses a box-convolved-with-Gaussian fit, tested only on synthetic
   boxes; INTT z stave rows sum boxes of two lengths and are only indicative.

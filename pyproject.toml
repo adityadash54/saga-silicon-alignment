@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "silicon-tracking-diagnostics"
+name = "saga-silicon-alignment"
 version = "0.1.0"
 description = "Orchestrated AI agents to diagnose detector alignment anomalies in the sPHENIX MVTX/INTT silicon tracker"
 readme = "README.md"
