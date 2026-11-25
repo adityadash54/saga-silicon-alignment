@@ -46,6 +46,15 @@ synthetic/output/
 synthetic/pipeline_output/
 synthetic/stavechip_demo/output/
 /stdiag_manual/
+# Run-by-run stability (stdiag.run_stability) outputs and notebook outputs
+synthetic/run_series_output/
+notebooks/output/
+.ipynb_checkpoints/
+changepoints_*.csv
+detections_*.csv
+series_*.csv
+stability_summary_*.json
+stability_report_*.md
 
 # ROOT ACLiC build products
 *_C.so
