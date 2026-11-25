@@ -35,13 +35,18 @@ def response(findings):
     (response(GOOD + [GHOST]), False, 0, 1, 0),
     (response([GOOD[0], {**GOOD[1], "group": "not_comparable"}]), False, 0, 0, 1),
     ("### Overview\nNo block.", False, 0, 0, 0),
+    (response([{**GOOD[0], "entries": [{**entry, "chip": float(entry["chip"])}
+                                       for entry in STAVE]}, GOOD[1]]),
+     True, 0, 0, 0),
+    (response([GOOD[0], {**GOOD[1], "entries": REST + STAVE[:1]}]),
+     False, 0, 0, 0),
 ])
 def test_findings_validation(tmp_path, synthetic_outputs, monkeypatch, text,
                              passed, unassigned, unknown, invalid):
     for name in ("flags_Iter0_vs_Iter1.csv", "summary_Iter0_vs_Iter1.json"):
         (tmp_path / name).write_bytes((synthetic_outputs / name).read_bytes())
     monkeypatch.setattr(triage_agent, "run_triage_claude_code",
-                        lambda summary, model: (text, "canned", {}))
+                        lambda summary, model, effort: (text, "canned", {}))
     monkeypatch.setattr(sys, "argv", [
         "triage_agent", str(tmp_path / "flags_Iter0_vs_Iter1.csv"),
         str(tmp_path / "summary_Iter0_vs_Iter1.json"),
@@ -82,10 +87,38 @@ def test_claude_code_output_parsing(monkeypatch, synthetic_outputs, stdout,
     monkeypatch.setattr(triage_agent.subprocess, "run",
                         lambda *args, **kwargs: Result)
     text, label, usage = triage_agent.run_triage_claude_code(
-        summary, "claude-opus-5-5")
+        summary, "claude-opus-5-5", None)
     assert text == expected_text
     assert usage["models"] == expected_models
     assert label == "claude-opus-5-5 via Claude Code CLI"
+
+
+@pytest.mark.parametrize("effort", ["xhigh", None])
+def test_claude_code_effort_flag(monkeypatch, synthetic_outputs, effort):
+    class Result:
+        returncode, stderr = 0, ""
+        stdout = json.dumps({"result": "Report text", "is_error": False})
+
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return Result
+
+    triage_agent.ComparisonData.flags = __import__("pandas").read_csv(
+        synthetic_outputs / "flags_Iter0_vs_Iter1.csv")
+    summary = json.loads(
+        (synthetic_outputs / "summary_Iter0_vs_Iter1.json").read_text())
+    monkeypatch.setattr(triage_agent.shutil, "which", lambda name: "claude")
+    monkeypatch.setattr(triage_agent.subprocess, "run", run)
+    _, _, usage = triage_agent.run_triage_claude_code(
+        summary, "claude-opus-5-5", effort)
+    command = commands[0]
+    if effort is None:
+        assert "--effort" not in command
+    else:
+        assert command[command.index("--effort") + 1] == effort
+    assert usage["effort"] == effort
 
 
 def test_stave_overview_keeps_stave_row_apart(monkeypatch,
@@ -130,3 +163,22 @@ def test_dry_run_sends_no_injection_truth(synthetic_outputs, capsys,
     assert "list_notable_unflagged" in prompt
     for leaked in ("inject", "stave_shift_rphi", "synthetic"):
         assert leaked not in prompt.lower()
+
+
+@pytest.mark.parametrize("prefix, suffix", [
+    ("", ""),
+    ('Example:\n```json\n{"example": 1}\n```\n', ""),
+    ("", "\n\n"),
+])
+def test_split_findings_takes_the_final_block(prefix, suffix):
+    report, findings = triage_agent.split_findings(
+        prefix + response(GOOD) + suffix)
+    assert findings == {"findings": GOOD}
+    assert report.startswith(prefix.rstrip())
+    assert report.endswith("Text.")
+
+
+def test_split_findings_keeps_fences_inside_strings():
+    tricky = [{**GOOD[0], "evidence": "see ```json``` above"}, GOOD[1]]
+    assert triage_agent.split_findings(response(tricky))[1] == {
+        "findings": tricky}
