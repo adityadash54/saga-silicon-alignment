@@ -10,7 +10,8 @@ updates and investigates the cause of the drifts. Deterministic,
 reproducible statistical tests flag the sensor drifts and record details in a
 CSV file. A team of AI agents then uses the CSV file to investigate the root
 cause, tracing each change through the sPHENIX reconstruction code, its
-commit history and the ACTS and Millepede-II documentation. The
+commit history, the ACTS and Millepede-II documentation, and the alignment
+literature of other experiments (searched locally). The
 result is a set of ranked, evidence-backed hypotheses, each with a concrete
 test the reviewer can run to confirm it.
 
@@ -63,7 +64,10 @@ test the reviewer can run to confirm it.
   coherent findings such as chip-level, stave level or layer level misalignments. A coresoftware expert agent proposes ranked hypotheses citing
   the responsible commit, file and line, and a tracking expert checks each
   one against the ACTS and Millepede-II documentation, with the two experts
-  verifying each other's claims. The agents work read-only, and propose hypothesis for the causes along with checks to verigy them. The human reviewer team then confirms it, and utilizes the AI suggestions to strategize the next step.
+  verifying each other's claims. The tracking expert also compares each
+  hypothesis with how other experiments met similar effects, using a local
+  hybrid (BM25 + embedding) search over the alignment literature
+  ([Literature retrieval](#literature-retrieval-for-the-tracking-expert)). The agents work read-only, and propose hypotheses for the causes along with checks to verify them. The human reviewer team then confirms it, and utilizes the AI suggestions to strategize the next step.
 - **Time-series monitoring.** Given one fit table per run, each sensor's
   residual mean and width form a time series. Three complementary
   change-point methods (CUSUM, PELT and Bayesian online change-point
@@ -97,6 +101,7 @@ flowchart LR
   T --> R{{Reviewer<br/>review}}
   R -- ask --> X[coresoftware expert<br/>AI, read-only git]
   X <-->|relayed by expert_dialogue<br/>max 3 turns each per round| Y[tracking expert<br/>AI, ACTS + Millepede-II]
+  LI[(literature index<br/>BM25 + Granite embeddings<br/>local)] -- passages / search --> Y
   X --> R
   Y --> R
   R -- continue / decide --> G[(review log)]
@@ -107,7 +112,9 @@ the machine. The
 triage and the experts are Claude agents. Routing, turn limits and stopping
 are fixed Python code (`stdiag/review.py`, `stdiag/expert_dialogue.py`); the
 agents never decide which agent runs next, and the reviewer approves every
-extra round and makes the final decision.
+extra round and makes the final decision. The literature index is built and
+searched locally; the tracking expert receives passages in its request and
+may run one allowlisted, read-only search command.
 
 ## Repository layout
 
@@ -115,7 +122,7 @@ extra round and makes the final decision.
 macros/      ROOT: plot_fits_overlaid_stavechip.C (fits -> CSV tables, and plots)
 stdiag/      Python package: compare_runs, run_stability, triage_agent,
              review, coresoftware_expert, tracking_expert,
-             expert_dialogue, fetch_tracking_docs, paths
+             expert_dialogue, fetch_tracking_docs, literature, paths
 maps/        coresoftware_code_map.md, tracking_docs_map.md, labels.example.csv
 synthetic/   synthetic data with injected changes: ROOT ntuples
              (make_synthetic_ntp.C) and fit tables, truth check,
@@ -127,6 +134,8 @@ notebooks/   run_stability_synthetic.ipynb (change-point methods on the
              synthetic run series; outputs in notebooks/output/, local only)
 tests/       pytest suite (no AI calls)
 evals/       evaluation layer for the AI agents (see evals/README.md)
+docs/        literature_rag.md (design of the literature retrieval);
+             TrackingLiterature/ alignment papers and talks (PDFs, local only)
 inputs/      residual_fits_<name>.csv tables to compare (local only;
              one synthetic example pair is committed)
 runs/        one folder per comparison, <a>_vs_<b> (local only)
@@ -163,6 +172,32 @@ can be set with environment variables:
 | `STDIAG_RUNS_DIR` | `runs/` in this repository (git-ignored) | `compare_runs`, which creates `<a>_vs_<b>/` folders there |
 
 `coresoftware` is not part of this repository; point the variable to the local coresoftware checkout of https://github.com/sPHENIX-Collaboration/coresoftware (full history needed for the experts).
+
+### Alignment literature for the tracking expert (optional)
+
+Put the alignment papers and talks (PDFs) in `docs/TrackingLiterature/`
+(git-ignored), then build the local search index. How it works:
+[Literature retrieval](#literature-retrieval-for-the-tracking-expert) and
+[`docs/literature_rag.md`](docs/literature_rag.md).
+
+```bash
+brew install poppler ollama           # pdftotext, local model server
+brew services start ollama
+ollama pull granite-embedding:30m
+stdiag-literature index               # first run: all files; later: only new or changed ones
+stdiag-literature search "twist weak mode mass constraint"
+stdiag-literature status
+```
+
+Rerun `stdiag-literature index` after adding, changing or removing PDFs; it
+processes only what changed.
+
+| Variable | Default | Used by |
+|---|---|---|
+| `STDIAG_LITERATURE_DIR` | `docs/TrackingLiterature/` | `stdiag-literature index` |
+| `STDIAG_LITERATURE_INDEX` | `literature_index/literature.sqlite` (git-ignored) | `stdiag-literature`, tracking expert |
+| `STDIAG_EMBED_MODEL` | `granite-embedding:30m` | `stdiag-literature` |
+| `STDIAG_OLLAMA_URL` | `http://localhost:11434` | `stdiag-literature` |
 
 ## Input format
 
@@ -469,7 +504,7 @@ outside an explicit list refused (`--permission-mode dontAsk`).
 |---|---|---|---|---|
 | Triage | empty temporary folder | none | the comparison data it is given (flagged rows, stave overviews of flagged layers, not-comparable and notable-unflagged entries) | grouped findings with priorities |
 | Coresoftware expert | `coresoftware/` | Read, Grep, Glob, read-only git (`log`, `show`, `diff`, `blame`, `status`, ...) | code, history, uncommitted changes, `labels.csv`, code map | ranked hypotheses: commit, file:line, mechanism, test, confidence; or "no code change explains this" |
-| Tracking expert | `coresoftware/` + `tracking_docs/` | as above + web fetch limited to www.desy.de, acts-project.github.io, github.com, raw.githubusercontent.com | ACTS 45.0.0 docs and headers, Millepede-II manual, sPHENIX code | per-hypothesis verdict (consistent / partly / inconsistent / cannot verify) with documentation and code citations |
+| Tracking expert | `coresoftware/` + `tracking_docs/` + `docs/TrackingLiterature/` | as above + web fetch limited to www.desy.de, acts-project.github.io, github.com, raw.githubusercontent.com + `stdiag-literature search` | ACTS 45.0.0 docs and headers, Millepede-II manual, sPHENIX code, alignment literature (best passages for the finding in its request; more by searching) | per-hypothesis verdict (consistent / partly / inconsistent / cannot verify) with documentation, code and literature citations |
 
 "Notable unflagged" entries (z > 5 but below the minimum shift, width
 significance > 4, or fewer than 200 entries) are shown to the triage so it
@@ -495,6 +530,46 @@ State is saved after every turn (`dialogue_*.json`); the transcript is
 `review_*.md`. `review ask --no-dialogue` gives a single coresoftware expert
 answer, and `review check` runs a one-off tracking expert review of any
 answer or transcript.
+
+## Literature retrieval for the tracking expert
+
+The tracking expert also checks hypotheses against how other experiments
+met similar effects (weak modes and their constraints, systematic
+distortions, alignment strategies). The papers and talks you keep in
+`docs/TrackingLiterature/` are searched locally by `stdiag-literature`; the
+repository contains no papers, no index and no test cases that name them.
+The literature never overrides the ACTS or Millepede-II documentation or
+the sPHENIX code.
+
+```mermaid
+flowchart LR
+  P[PDFs] --> I[stdiag-literature index<br/>pdftotext, 200-word chunks]
+  I --> DB[(SQLite: FTS5 BM25<br/>+ Granite embeddings)]
+  DB --> S[hybrid search<br/>reciprocal rank fusion]
+  S -- "(A) top 6 for the finding,<br/>added by build_request" --> Y[tracking expert]
+  Y -- "(B) allowlisted<br/>stdiag-literature search" --> S
+  Y -- Read page, cite title + page --> P
+```
+
+| Part | How |
+|---|---|
+| Text | `pdftotext` (Homebrew poppler) in reading order, so two-column papers stay in order |
+| Chunks | 200 words with 30 words overlap, each with its page range (fits the 512-token model) |
+| Keyword ranking | BM25 from SQLite FTS5 (standard library), porter stemming |
+| Embeddings | IBM `granite-embedding:30m` via Ollama on localhost; nothing leaves the machine |
+| Fusion | Reciprocal rank fusion of the two top-50 lists; at most 2–3 hits per paper |
+
+Indexing is incremental: files are identified by the SHA-256 of their
+content, so only new or changed files are extracted and embedded, renamed or
+duplicated files are relinked, and removed files are dropped. BM25
+statistics update themselves; only a change of embedding model or chunking
+needs `index --rebuild`. The agent's only added permission is the
+`stdiag-literature search` command, which opens the index read-only; it may
+Read the PDFs to check a passage and must cite title and page. If Ollama is
+not running, search falls back to BM25 with a visible warning; without an
+index the tracking expert runs as before. Details, including the schema,
+the query built from a finding, and the limitations:
+[`docs/literature_rag.md`](docs/literature_rag.md).
 
 ## Run-by-run stability
 
@@ -548,6 +623,7 @@ method on this series (`pip install -e ".[notebook]"`).
 
 ```bash
 pytest                          # comparison, findings validation, review and dialogue logic,
+                                # literature index (fake embedder, no Ollama),
                                 # truth check on synthetic/reference/ (no AI, no ROOT)
 synthetic/run_test.sh           # synthetic fit tables -> comparison -> truth check (no AI, no ROOT)
 synthetic/run_full_pipeline.sh  # the same from synthetic ROOT files, through the fit macro (needs ROOT)
@@ -560,7 +636,7 @@ is run by hand. CI never calls an AI model and needs no credentials.
 
 ## Evaluation layer
 
-The framework is evaluated in four parts. The steps without AI (including
+The framework is evaluated in five parts. The steps without AI (including
 run-by-run stability) and the code around the agents are tested against
 known answers; the AI agents themselves
 have an eval in `evals/` that is built but not yet run. Details are in
@@ -570,8 +646,9 @@ have an eval in `evals/` that is built but not yet run. Details are in
 |---|---|---|---|
 | **Steps without AI** (fits, comparison) | Synthetic data with known injected changes → fit macro → `compare_runs` → `check_against_truth` / `check_demo` | Every row's status (flagged, unchanged, not comparable) matches the injected truth; statistically limited rows may go either way | Fit tables: 1312/1312 rows, 2 comparisons, 20 seeds. From ROOT files: 1550/1550 rows, reference seed and seeds 1–8. Stave/chip demo: current fit passes; the old settings fail in the 4 expected entries |
 | **Run-by-run stability** (no AI) | 60-run synthetic series of fit tables (`make_synthetic_run_series`) with 15 injected effects: chip, sensor, stave, half-layer and whole-layer steps, a transient, a drift, a one-run outlier, a bad run, a width change, and decoys that must not be reported (3 µm step, sub-threshold drift, 5%-luminosity runs, a missing ladder) → `run_stability` → `check_run_stability` | Every injection found with its expected class within ±2 runs (±6 for drift start and end); decoys give nothing; at most 2 unexplained change points per scan; a series with no changes (`--null`) gives none | 15 seeds × (injected + null): 30/30 pass. Null series: 0 change points in all 15; before the final criteria the methods fire 1.3 (BOCPD), 1.2 (PELT) and 0.9 (CUSUM) times per scan (target about 1). Injected series: 1 unexplained change point in total (seed 3: a half-layer step labelled a drift starting 3 runs early) |
-| **Code around the agents** | `pytest` with scripted agent replies (no AI) | Triage output validation (missing or invented entries, invalid groups, no JSON), no truth in the triage prompt, dialogue routing (convergence, turn limits, questions to the reviewer, missing status blocks), run folders | All 60 pytest tests pass, 25 of them on the triage output and the review and dialogue logic; they also run in CI |
+| **Code around the agents** | `pytest` with scripted agent replies (no AI) | Triage output validation (missing or invented entries, invalid groups, no JSON), no truth in the triage prompt, dialogue routing (convergence, turn limits, questions to the reviewer, missing status blocks), run folders | All 88 pytest tests pass, 25 of them on the triage output and the review and dialogue logic and 28 on the literature index (with a fake embedder); they also run in CI |
 | **AI triage** (`evals/triage/`) | 21 synthetic cases × 2 repetitions: no change, stave-wide, single chip or sensor, width, mean and width, missing ladder, sub-threshold and low-statistics decoys, two mixed. Each runs the real comparison and the real triage; the runner refuses to start until the reviewer approves a checksum of the harness | Graded by code from `findings_*.json`. A run passes if validation passed, every injected change that produces flags is matched by one finding (≥80% overlap both ways) in the expected group, and there are no invented or merged findings. Recall, group accuracy, cost and time are also recorded | Grader self-test passes on all 21 cases: a perfect answer passes everywhere, and empty or lumped-together answers fail where they should. The benchmark has not been run yet, so there is no pass rate. Two earlier live runs on the synthetic Iter1/Iter2 comparisons grouped every injected change correctly; that is too few to quote an accuracy, and 42 runs will still carry about ±15 percentage points |
+| **Literature retrieval** (`evals/retrieval/`, no AI apart from the local embedding model) | Your own questions with an expected paper and page range (`cases.json`, local only; `cases.example.json` shows the format) → `stdiag-literature` search in bm25, dense and hybrid mode | A case passes at k if a top-k passage comes from an expected paper and overlaps its pages; recall@5, recall@10, MRR@10 | Runner built. The cases are drafts written by Claude from the extracted text and not yet checked by the reviewer; dense and hybrid have not been run, so there are no results yet |
 
 Evals for the coresoftware expert (finds the causing commit), the tracking
 expert (verdicts), the permission limits and the expert dialogue are planned
@@ -656,13 +733,20 @@ regenerates everything from `make_synth.C`.
 - Refresh the snapshot with
   `python -m stdiag.fetch_tracking_docs [--acts-ref <branch-or-tag>]`;
   provenance is recorded in `tracking_docs/SOURCES.json`.
+- **Literature retrieval**: `granite-embedding:30m` (IBM, Apache 2.0) from
+  Ollama's library, served by Ollama 0.40.18; `pdftotext` from poppler
+  26.11.0 (both Homebrew). The model name, its digest and the chunker
+  version are stored in the index; `stdiag-literature status` shows them.
 
 ## Data policy
 
 The fit and comparison steps send nothing anywhere. Each AI step sends its
 prompt and whatever the agent reads to Anthropic: fit summaries and labels
 for the triage; the finding, code, git history and documentation for the
-experts. No ROOT files, hits or tracks are read by any agent.
+experts, and for the tracking expert also the literature passages in its
+request and the PDF pages it reads. Building and searching the literature
+index is local (Ollama on localhost). No ROOT files, hits or tracks are read
+by any agent.
 
 What Anthropic does with the data depends on how each step authenticates:
 
