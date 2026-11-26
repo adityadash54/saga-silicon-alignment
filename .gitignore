@@ -16,12 +16,26 @@ dist/
 coresoftware/
 tracking_docs/
 
+# Alignment literature (publisher PDFs; some have no .pdf extension) and its
+# search index (stdiag-literature index)
+/docs/TrackingLiterature/
+/literature_index/
+# Retrieval test cases name the papers and pages: local only
+# (evals/retrieval/cases.example.json shows the format)
+/evals/retrieval/cases.json
+
+# Local Claude Code settings (personal permissions)
+.claude/settings.local.json
+
 # Your input tables and comparison outputs stay local (inputs/README.md,
 # runs/README.md)
 /inputs/*
 !/inputs/README.md
 /runs/*
 !/runs/README.md
+
+# Presentation material (deck, figures, demo script) stays local
+/talk/
 
 # Data and generated outputs
 *.root
