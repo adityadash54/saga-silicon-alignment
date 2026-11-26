@@ -8,6 +8,12 @@ STDIAG_TRACKING_DOCS  ACTS / Millepede-II snapshot made by
 STDIAG_RUNS_DIR       where compare_runs creates one folder per comparison,
                       runs/<a>_vs_<b> (default: runs/ in this repository,
                       git-ignored)
+STDIAG_LITERATURE_DIR alignment papers and talks (PDFs) indexed by
+                      `stdiag-literature index` (default:
+                      docs/TrackingLiterature/ in this repository, git-ignored)
+STDIAG_LITERATURE_INDEX  SQLite file with the BM25 + embedding index
+                      (default: literature_index/literature.sqlite,
+                      git-ignored)
 """
 
 from __future__ import annotations
@@ -25,3 +31,8 @@ CORESOFTWARE = Path(os.environ.get(
 TRACKING_DOCS = Path(os.environ.get(
     "STDIAG_TRACKING_DOCS", REPO_ROOT / "tracking_docs")).resolve()
 RUNS_DIR = Path(os.environ.get("STDIAG_RUNS_DIR", REPO_ROOT / "runs")).resolve()
+LITERATURE_DIR = Path(os.environ.get(
+    "STDIAG_LITERATURE_DIR", REPO_ROOT / "docs" / "TrackingLiterature")).resolve()
+LITERATURE_INDEX = Path(os.environ.get(
+    "STDIAG_LITERATURE_INDEX",
+    REPO_ROOT / "literature_index" / "literature.sqlite")).resolve()

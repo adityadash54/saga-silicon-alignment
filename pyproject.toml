@@ -21,6 +21,7 @@ stdiag-stability = "stdiag.run_stability:main"
 stdiag-triage = "stdiag.triage_agent:main"
 stdiag-review = "stdiag.review:main"
 stdiag-fetch-docs = "stdiag.fetch_tracking_docs:main"
+stdiag-literature = "stdiag.literature:main"
 
 [tool.setuptools]
 packages = ["stdiag"]
