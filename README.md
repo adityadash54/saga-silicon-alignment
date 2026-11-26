@@ -9,10 +9,12 @@ This framework measures the drift of sensors of the sPHENIX silicon tracker
 updates and investigates the cause of the drifts. Deterministic,
 reproducible statistical tests flag the sensor drifts and record details in a
 CSV file. A team of AI agents then uses the CSV file to investigate the root
-cause, tracing each change through the sPHENIX reconstruction code, its
-commit history, the ACTS and Millepede-II documentation, and the alignment
-literature of other experiments (searched locally). The
-result is a set of ranked, evidence-backed hypotheses, each with a concrete
+cause: a triage agent (tool use) groups the flags into findings, a
+coresoftware expert (agentic search) searches the sPHENIX reconstruction code
+and its commit history for changes that explain them, and a tracking expert
+(agentic RAG) checks each hypothesis against the ACTS and Millepede-II
+documentation, using the alignment literature of other experiments (searched
+locally) as supporting evidence. The result is a set of ranked, evidence-backed hypotheses, each with a concrete
 test the reviewer can run to confirm it.
 
 ## Overview
@@ -60,14 +62,28 @@ test the reviewer can run to confirm it.
   flags, orchestration of the agents, and run-by-run monitoring are all
   fixed and determinstic code with fixed thresholds. They are reproducible, configurable, run locally, and
   do not use AI. This makes the drift detection robust against AI hallucinations, data manipulations and keeps the flags manually verifiable.
-- **Agentic root-cause analysis.** A triage agent groups the flags into
-  coherent findings such as chip-level, stave level or layer level misalignments. A coresoftware expert agent proposes ranked hypotheses citing
-  the responsible commit, file and line, and a tracking expert checks each
-  one against the ACTS and Millepede-II documentation, with the two experts
-  verifying each other's claims. The tracking expert also compares each
-  hypothesis with how other experiments met similar effects, using a local
-  hybrid (BM25 + embedding) search over the alignment literature
-  ([Literature retrieval](#literature-retrieval-for-the-tracking-expert)). The agents work read-only, and propose hypotheses for the causes along with checks to verify them. The human reviewer team then confirms it, and utilizes the AI suggestions to strategize the next step.
+- **Agentic root-cause analysis.** Three read-only Claude agents with
+  distinct architectures:
+  - **Triage (tool use).** Calls read-only functions over the comparison
+    tables (with `--backend claude-code`, receives their outputs in one
+    prompt instead), groups the flags into coherent findings such as chip-,
+    stave- or layer-level misalignments, and returns structured JSON that
+    code validates against the flags.
+  - **Coresoftware expert (agentic search).** Searches the coresoftware
+    checkout on demand with read-only Read, Grep, Glob and git commands (no
+    index) and proposes ranked hypotheses citing the responsible commit,
+    file and line.
+  - **Tracking expert (agentic RAG).** Receives the literature passages
+    retrieved for the finding (local hybrid BM25 + embedding search), can
+    run that search itself, and also searches the ACTS and Millepede-II
+    documentation and the code. It checks each hypothesis against the
+    documentation and code, with the literature as supporting evidence
+    ([Literature retrieval](#literature-retrieval-for-the-tracking-expert)).
+
+  The two experts verify each other's claims in a dialogue routed by fixed
+  Python code. Each hypothesis comes with a check to confirm it; the human
+  reviewer team then confirms it and uses the AI suggestions to plan the
+  next step.
 - **Time-series monitoring.** Given one fit table per run, each sensor's
   residual mean and width form a time series. Three complementary
   change-point methods (CUSUM, PELT and Bayesian online change-point
