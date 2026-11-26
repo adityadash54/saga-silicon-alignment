@@ -49,3 +49,17 @@ when the snapshot lacks something, and say so when you do.
 | Residual definition from the ACTS fit | `offline/packages/trackreco/ActsAlignmentStates.cc` (`localMeas - localState`) |
 | Alignment parameters into ACTS transforms | `offline/packages/trackbase/AlignmentTransformation.cc`, `alignmentTransformationContainer.cc` |
 | ACTS geometry building and fitting | `offline/packages/trackreco/MakeActsGeometry.cc`, `PHActsTrkFitter.cc` |
+
+## Alignment literature (`docs/TrackingLiterature/`, local hybrid search)
+
+Papers and talks on track-based alignment and track fitting from other
+experiments, kept locally by the user. The request
+already contains the best passages for the finding under "Literature
+passages". For more, run the search command named in your instructions with a
+query, for example `search twist weak mode mass constraint`;
+`--mode bm25` ranks by exact terms only. Each hit gives the title, pages and
+PDF path: Read that page (the Read tool takes a `pages` range for PDFs) before
+citing it, and cite as *title, p. N*. Use the literature for how other
+experiments diagnosed and constrained similar effects (weak modes,
+constraints, systematic distortions); it does not override ACTS,
+Millepede-II or the sPHENIX code.

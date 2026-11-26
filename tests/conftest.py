@@ -107,3 +107,12 @@ def git_repo(tmp_path) -> tuple[Path, list[str]]:
             ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
             capture_output=True, text=True).stdout.strip())
     return repo, commits
+
+
+@pytest.fixture(autouse=True)
+def no_real_literature_index(monkeypatch, tmp_path):
+    """Keep tests independent of a locally built literature index and of
+    Ollama: the tracking expert sees no index unless a test provides one."""
+    from stdiag import tracking_expert
+    monkeypatch.setattr(tracking_expert, "LITERATURE_INDEX",
+                        tmp_path / "no_literature_index.sqlite")
