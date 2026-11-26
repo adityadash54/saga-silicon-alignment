@@ -1,0 +1,12 @@
+{
+  "about": "Format of the retrieval test cases. Copy to cases.json (git-ignored, because it names your papers and pages) and replace these made-up examples with questions about your own literature. A case passes at k if any of the top-k passages comes from an expected file and overlaps its page range. Phrase questions the way you would ask them, not with the words of the page. status: 'draft' until you have checked the expected pages, then 'approved'.",
+  "cases": [
+    {"id": "example-weak-mode", "status": "draft",
+     "question": "How can a coherent rotation of sensors that grows along the beam axis be constrained in a track-based alignment?",
+     "expected": [{"file": "Example paper A.pdf", "pages": [3, 4]}]},
+    {"id": "example-two-sources", "status": "draft",
+     "question": "Which track model includes multiple scattering and still gives the full covariance matrix for a global alignment fit?",
+     "expected": [{"file": "Example paper B.pdf", "pages": [1, 2]},
+                  {"file": "Example talk C", "pages": [5, 7]}]}
+  ]
+}
