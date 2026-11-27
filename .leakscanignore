@@ -1,0 +1,11 @@
+# Findings of pre-push-leak-scan accepted by the repository owner.
+# Only add entries for findings that were reviewed; never for a credential.
+
+# Public, official Millepede-II addresses (not internal hosts), accepted
+# 2026-11-27: gitlab.desy.de is the official repository used to check the
+# release tag; millepede.pages.desy.de is its public documentation site.
+fp:aa5b6bcbf12b477d
+fp:0b0ac9bd51ade064
+fp:86d10bdcab8c37e5
+fp:20c09ed69eb2c653
+fp:2395b568be404943
