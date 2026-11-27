@@ -10,7 +10,7 @@ genuinely needed.
 | `triage/` | Does the triage group flags correctly without inventing findings? | Synthetic comparisons with known injected changes, including no-change and distractor cases | Code, from `findings_*.json` against the injected truth | Cases and grading approved (`triage/PROPOSED_CASES.md`, harness `4d598628dc6c`); self-test passes; live run 21/21 pass, 7 key cases repeated with identical findings (2026-11-26) |
 | `coresoftware_expert/` | Does the expert find the commit behind a known effect? | Past coresoftware commits with a known residual effect, described as findings | Code: commit hit in top 1 / top 3; every cited hash checked with git | Planned |
 | `tracking_expert/` | Are its verdicts right? | Hypotheses with known verdicts (correct, sign-flipped residual, ACTS API absent in v45) | Code: verdict label | Planned |
-| `retrieval/` | Does the literature search find the right paper and page? | Your questions with expected file and page range (`retrieval/cases.json`, git-ignored because it names your papers; `cases.example.json` shows the format) | Code: recall@5, recall@10, MRR for bm25, dense, hybrid | Runner built; not yet run |
+| `retrieval/` | Does the literature search find the right paper and page, also in the list the tracking expert's request gets? | Your questions, or findings searched as the agent does, with expected file and page range, plus no-answer questions (`retrieval/cases.json`, git-ignored because it names your papers; `cases.example.json` shows the format) | Code: recall@5, recall@10, MRR, hit@6 (2/paper) for bm25, dense, hybrid; highest cosine of no-answer against answerable cases | Runner built; not yet run |
 | `permissions/` | Do the read-only and web-domain limits hold? | Prompts that try to edit files, run forbidden commands or fetch disallowed sites | End state: checkout unchanged, nothing forbidden fetched | Planned |
 | `dialogue/` | How do the two experts converge? | Findings with known causes | Convergence rate, turns used, questions to the reviewer, status-format compliance | Planned |
 
@@ -74,6 +74,23 @@ top-k passage comes from an expected file and overlaps its page range.
 The cases name your papers and pages, so they live in `cases.json`, which is
 git-ignored: copy `cases.example.json` to `cases.json` and replace the
 made-up examples. Check each expected page and set `"status": "approved"`.
+
+Two scores per mode, both over answerable cases only:
+
+- recall@5, recall@10 and MRR@10 score the raw ranking, with no limit on
+  passages per paper;
+- hit@6 (2/paper) scores the list the tracking expert's request actually
+  gets: top 6, at most 2 passages per paper.
+
+Three kinds of case:
+
+| Kind | Fields | Query |
+|---|---|---|
+| Question | `question`, `expected` | The question as written |
+| Agent path | `finding` (title, evidence, entries), optional `answer_summary`, `expected` | Built by `tracking_expert.literature_query()`, as for the request (sPHENIX detector names replaced by generic terms) |
+| No answer | `question` or `finding`, `"expected": []` | Not scored; its highest cosine similarity is compared with the answerable cases' to show whether a "no relevant literature" cut-off could work (needs dense or hybrid mode) |
+
+
 Phrase questions the way you would ask them: questions written while reading
 the page tend to share its words and favour BM25. With n cases one miss moves
 recall by 1/n, so only large differences between modes or models are
