@@ -1,42 +1,51 @@
 # coresoftware code map for residual diagnostics
 
-Where the MVTX/INTT residuals in the `ntp` tree come from, and which code a
-given kind of finding points to. Paths are relative to `coresoftware/`. Line
-numbers were checked in the working tree on branch `alignment_updates` (HEAD
-7e9e8e62b) and drift with later commits; always confirm with
-`git show <rev>:<path>` or `git blame`.
+Where the MVTX/INTT residuals in the `ntp` tree come from, traced back from
+the module that writes them. Paths are relative to `coresoftware/`. Line
+numbers were checked at commit 9c6cf8db3 (2026-11-25) and drift with later
+commits; always confirm with `git show <rev>:<path>` or `git blame`. The
+request also lists the commits of the range in each tier (tier 1 and tier 2
+below); only those are candidates.
 
-The working tree has uncommitted changes to
-`offline/packages/TrackerMillepedeAlignment/MakeMilleFiles.cc` and `.h`
-(about 660 changed lines). `git log` does not show them; check `git status`
-and `git diff`, since ntuples may have been produced from an uncommitted build.
+## Tier 1: `offline/packages/TrackerMillepedeAlignment/`
 
-## How a residual reaches the `ntp` tree
+| File | What it does for the residuals |
+|---|---|
+| `MakeMilleFiles.cc` | Books the `ntp` (l. 250–252: `layer:stave:chip:residualX:residualY:...`) and fills it (l. 1859); reads the residual from the alignment state; applies the track selection (pT cut `m_minPt` at l. 597, set with `set_pt_cut`, default 0 in `.h` l. 164; MVTX/INTT hit and vertex cuts) and writes the vertex residual −DCA (l. 770–772). |
+| `AlignmentDefs.cc`, `.h` | Global labels and alignment groupings (`mvtxGrp`: sensor, stave, layer, clamshell; `inttGrp`). |
+| `Mille.cc`, `.h` | Mille binary writer (sPHENIX's own copy). |
+| `HelicalFitter.cc` | Alternative residual producer with its own `ntp` (`crosshalfmvtx`, l. 134–138). |
 
-| Step | Location | What happens |
+## Tier 2: what MakeMilleFiles depends on
+
+MakeMilleFiles reads five nodes; each is filled by other modules. Follow the
+link that matches the finding.
+
+| Node read by MakeMilleFiles | Filled by (tier 2) | What a change there does |
 |---|---|---|
-| Clustering (MVTX) | `offline/packages/mvtx/MvtxClusterizer.cc`: `are_adjacent` (l. 72, 94), `ClusterMvtx` (l. 287), `ClusterMvtxRaw` (l. 600); `offline/packages/mvtx/MvtxClusterPruner.cc` | Pixel adjacency, cluster position and size; pruning of clusters. |
-| Clustering (INTT) | `offline/packages/intt/InttClusterizer.cc`: `ladder_are_adjacent` (l. 55, 78), `InitRun` (l. 108) | Strip adjacency and cluster position. |
-| Cluster errors | `offline/packages/trackbase/ClusterErrorPara.cc` | Cluster position uncertainties used as fit weights. |
-| Alignment parameters | `offline/packages/trackbase/AlignmentTransformation.cc`: `createMap` (l. 35) reads a local file (`alignmentParamsFile`, l. 80–90) or the CDB tag `TRACKINGALIGNMENT` (l. 96); `newMakeTransform` (l. 388); `misalignmentFactor` (l. 585); `generateRandomPerturbations` (l. 619) | Builds each sensor's transform from alignment parameters. |
-| Transform storage | `offline/packages/trackbase/alignmentTransformationContainer.cc` | Holds the per-surface transforms used by geometry and fitting. |
-| Acts geometry | `offline/packages/trackreco/MakeActsGeometry.cc`: `buildAllGeometry` (l. 377), `buildActsSurfaces` (l. 634) | Creates the detector surfaces (and their mapping to hitset keys). |
-| Track fit | `offline/packages/trackreco/PHActsTrkFitter.cc` (also `WeightedFitter.cc`) | Produces the fitted track states. |
-| Residual definition | `offline/packages/trackreco/ActsAlignmentStates.cc`: l. 149 `localResidual = localMeas - localState`; stored at l. 221 | Local residual = measurement − fitted state (sign convention). |
-| `ntp` booking and fill | `offline/packages/TrackerMillepedeAlignment/MakeMilleFiles.cc`: `ntp` columns (`layer:stave:chip:residualX:residualY:...`), residual read from the alignment state, and fill at l. 174–182, 1135, 1314 in the working tree; l. 101–108, 562, 735 at HEAD 7e9e8e62b (the later columns differ) | Writes the tree read by `plot_fits_overlaid_stavechip.C` and the other plot macros; also applies track/vertex selection. |
-| Related | `offline/packages/TrackerMillepedeAlignment/HelicalFitter.cc` (own `ntp` with `crosshalfmvtx`), `offline/packages/TrackingDiagnostics/TrackResiduals.cc` (`fillClusterBranchesKF`, l. 1039) | Alternative residual producers; useful for cross-checks. |
+| `SvtxAlignmentStateMap` | `trackreco/PHActsTrkFitter.cc` → `trackreco/ActsAlignmentStates.cc` (l. 149 `localResidual = localMeas - localState`, smoothed state; stored at l. 221) | Residual definition and sign, derivatives, fit settings (outlier finder off by default: `PHActsTrkFitter.h` l. 289) |
+| (inside that fit) | `trackreco/MakeSourceLinks.cc` (covariance l. 249–254) with `trackbase/ClusterErrorPara.cc` (`get_clusterv5_modified_error`, returns σ², l. 770; data-reco silicon factors l. 724–744) | Measurement errors: hit weights, so the widths of the biased residuals |
+| `ActsGeometry` | `trackreco/MakeActsGeometry.cc` (`buildAllGeometry` l. 377, `buildActsSurfaces` l. 634) with `trackbase/AlignmentTransformation.cc` (`createMap` l. 35: local file or CDB `TRACKINGALIGNMENT` l. 96; parameter lines l. 140 and 159; `newMakeTransform` l. 388) and `trackbase/alignmentTransformationContainer.cc` | Sensor positions from the alignment parameters: mean shifts by sensor, stave, layer |
+| `TRKR_CLUSTER` | `mvtx/`: `MvtxCombinedRawDataDecoder.cc` (hot-pixel masking l. 345–351, off by default), `MvtxClusterizer.cc` (`are_adjacent` l. 72, 94; `ClusterMvtx` l. 287; `ClusterMvtxRaw` l. 600), `MvtxClusterPruner.cc`; `intt/`: `InttCombinedRawDataDecoder.cc` (bad-channel map l. 328–351, permanent chip mask l. 354), `InttClusterizer.cc` (`ladder_are_adjacent` l. 55, 78) | Cluster positions, sizes and which hits exist: single-chip effects, missing or extra entries |
+| `SvtxTrackMap`, `SvtxVertexMap` | The fit above; `trackreco/PHSimpleVertexFinder.cc` (standard vertexing), `trackreco/PHActsVertexPropagator.cc`; `trackbase_historic/TrackAnalysisUtils.cc` (`get_dca`: track − vertex, l. 215–255) | Track and vertex selection, DCA |
 
-## Finding type → where to look
+Also in tier 2 because MakeMilleFiles includes them: the rest of
+`trackbase/` and `trackbase_historic/`, and `trackreco/ActsPropagator.cc`.
 
-| Finding | Code areas | Non-code causes to rule out |
+## Finding type → link to follow
+
+| Finding | Start in tier 1 | Then the tier 2 link |
 |---|---|---|
-| Coherent stave/ladder-wide mean shift | `AlignmentTransformation.cc` (`createMap`, `newMakeTransform`), `alignmentTransformationContainer.cc`, `MakeActsGeometry.cc` surfaces | Alignment parameter file or `TRACKINGALIGNMENT` CDB tag changed; geometry version |
-| Half-layer / half-barrel shift | As above, plus MVTX half-barrel handling (search `half`, e.g. `crosshalfmvtx` in `HelicalFitter.cc`) | Half-barrel alignment constants; stave numbering vs azimuth |
-| Isolated chip/sensor mean shift | Per-sensor transform creation in `AlignmentTransformation.cc`; surface ↔ hitset-key mapping in `MakeActsGeometry.cc`; local-coordinate cluster position in the clusterizers | A single sensor's alignment parameters; mapping changes |
-| Width-only change on a chip | Clusterizer adjacency/position (`MvtxClusterizer.cc`, `InttClusterizer.cc`), `MvtxClusterPruner.cc`, `ClusterErrorPara.cc`, fitter configuration | Hot/masked pixel maps, thresholds, a chip rotation not covered by the alignment parameters |
-| Missing or low-statistics ladder/stave | Hit unpacking/decoding, track selection in `MakeMilleFiles.cc` | Bad-channel maps, ladder off or masked, file coverage |
-| Every chip shifted or sign flipped | `ActsAlignmentStates.cc` residual definition, `MakeMilleFiles.cc` fill | Different macro or module configuration |
+| Coherent stave/ladder- or layer-wide mean shift | `MakeMilleFiles.cc` fill and selection | `ActsGeometry`: `AlignmentTransformation.cc`, `MakeActsGeometry.cc` |
+| Isolated chip/sensor mean shift | as above | `ActsGeometry` per-sensor transform; `TRKR_CLUSTER` positions (clusterizer, masking) |
+| Width-only change | selection in `MakeMilleFiles.cc` | Measurement errors (`ClusterErrorPara.cc`, `MakeSourceLinks.cc`); fit settings |
+| Missing, extra or low entries | selection in `MakeMilleFiles.cc` | `TRKR_CLUSTER`: decoders and their masks, clusterizers |
+| Every chip shifted or sign flipped | `MakeMilleFiles.cc` fill | `ActsAlignmentStates.cc` residual definition |
+| VERTEX (DCA) rows | vertex residual and pT cut in `MakeMilleFiles.cc` | `SvtxVertexMap`, `get_dca`, the fit |
 
+If nothing in tier 1 or tier 2 explains the finding, the answer is: "The
+reason could not be found from the changes in
+offline/packages/TrackerMillepedeAlignment/ or the files it depends on."
 Most residual changes between productions come from alignment constants,
-conditions-database tags or macro settings rather than code. "No code change
-in range explains this" is a valid conclusion.
+conditions-database tags or macro settings rather than code; list those as
+non-code causes to check.

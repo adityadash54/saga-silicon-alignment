@@ -10,8 +10,9 @@ updates and investigates the cause of the drifts. Deterministic,
 reproducible statistical tests flag the sensor drifts and record details in a
 CSV file. A team of AI agents then uses the CSV file to investigate the root
 cause: a triage agent (tool use) groups the flags into findings, a
-coresoftware expert (agentic search) searches the sPHENIX reconstruction code
-and its commit history for changes that explain them, and a tracking expert
+coresoftware expert (agentic search) traces the residuals back from
+`MakeMilleFiles.cc` through the code they depend on and searches those
+changes in the commit history for one that explains them, and a tracking expert
 (agentic RAG) checks each hypothesis against the ACTS and Millepede-II
 documentation, using the alignment literature of other experiments (searched
 locally) as supporting evidence. The result is a set of ranked, evidence-backed hypotheses, each with a concrete
@@ -69,10 +70,17 @@ test the reviewer can run to confirm it.
     prompt instead), groups the flags into coherent findings such as chip-,
     stave- or layer-level misalignments, and returns structured JSON that
     code validates against the flags.
-  - **Coresoftware expert (agentic search).** Searches the coresoftware
-    checkout on demand with read-only Read, Grep, Glob and git commands (no
-    index) and proposes ranked hypotheses citing the responsible commit,
-    file and line.
+  - **Coresoftware expert (agentic search).** Searches only the code that
+    produces the `ntp` residuals: tier 1 is
+    `offline/packages/TrackerMillepedeAlignment/`, tier 2 the files
+    `MakeMilleFiles.cc` includes and the modules that fill the nodes it
+    reads (fit and alignment states, measurement errors, geometry and
+    alignment transforms, MVTX/INTT clusters, tracks, vertices). The
+    commits of the range in each tier are listed by `git log` before Claude
+    is called. It reads tier 1 first, traces back into tier 2 where the
+    finding points, with read-only Read, Grep, Glob and git commands, and
+    proposes ranked hypotheses citing the responsible commit, file and line,
+    or says the reason could not be found from those changes.
   - **Tracking expert (agentic RAG).** Receives the literature passages
     retrieved for the finding (local hybrid BM25 + embedding search), can
     run that search itself, and also searches the ACTS and Millepede-II
@@ -587,7 +595,7 @@ outside an explicit list refused (`--permission-mode dontAsk`).
 | Agent | Works in | Tools | Reads | Produces |
 |---|---|---|---|---|
 | Triage | empty temporary folder | none | the comparison data it is given (flagged rows, stave overviews of flagged layers, not-comparable and notable-unflagged entries) | grouped findings with priorities |
-| Coresoftware expert | `coresoftware/` | Read, Grep, Glob, read-only git (`log`, `show`, `diff`, `blame`, `status`, ...; no `git grep`, whose `-O` runs a program; `--output` and branch changes blocked) | code, history, uncommitted changes, `labels.csv`, code map | ranked hypotheses: commit, file:line, mechanism, test, confidence; or "no code change explains this" |
+| Coresoftware expert | `coresoftware/` | Read, Grep, Glob, read-only git (`log`, `show`, `diff`, `blame`, `status`, ...; no `git grep`, whose `-O` runs a program; `--output` and branch changes blocked) | code, history and uncommitted changes in tier 1 (`TrackerMillepedeAlignment/`) and tier 2 (what `MakeMilleFiles.cc` depends on), with the commits of each tier listed in the request; `labels.csv`, code map | ranked hypotheses: tier, commit, file:line, mechanism, test, confidence; or "the reason could not be found from the changes in `TrackerMillepedeAlignment/` or the files it depends on" |
 | Tracking expert | `coresoftware/` + `tracking_docs/` + `docs/TrackingLiterature/` | as above + `stdiag-literature search`; no network access (no web fetch or search) | ACTS 45.0.0 docs, headers and sources (local snapshot), Millepede-II manual, sPHENIX code, alignment literature (best passages for the finding in its request; more by searching) | per-hypothesis verdict (consistent / partly / inconsistent / cannot verify) with documentation, code and literature citations |
 
 "Notable unflagged" entries (z > 5 but below the minimum shift, width

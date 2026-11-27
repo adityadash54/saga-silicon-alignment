@@ -90,7 +90,8 @@ def turn_text(state: dict, agent: str) -> str:
     if not state["started"][agent] and agent == "coresoftware":
         initial = state["initial"]
         parts.append(coresoftware_expert.build_request(
-            initial["request"], initial["revision"], initial["labels"]))
+            initial["request"], initial["revision"], initial["labels"],
+            Path(state["repo"])))
     elif not state["started"][agent]:
         parts.append(tracking_expert.build_request(
             state["initial"]["request"], state["pending_message"]))
@@ -251,6 +252,6 @@ def dry_run_text(request: dict, revision: dict, labels: dict, repo: Path,
     return coresoftware_expert.describe_dry_run(
         coresoftware_expert.EXPERT_PROMPT
         + coresoftware_expert.DIALOGUE_PROTOCOL,
-        coresoftware_expert.build_request(request, revision, labels)
+        coresoftware_expert.build_request(request, revision, labels, repo)
         + f"\n\nYou have {MAX_TURNS_PER_SIDE} turn(s) left in round 1, "
           "including this one.", repo, command)
