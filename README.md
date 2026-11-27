@@ -170,25 +170,46 @@ source .venv/bin/activate
 
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
-python -m stdiag.fetch_tracking_docs
+mkdir -p docs/Millepede   # then save the Millepede-II page there (below)
+python -m stdiag.fetch_tracking_docs --update-acts
 cp maps/labels.example.csv labels.csv
 ```
+
+The tracking expert has no network access, so its ACTS and Millepede-II
+documentation is a local snapshot in `tracking_docs/`, built once and
+refreshed only when you ask. Save the Millepede-II manual page by hand
+first (it changes rarely), either with the browser (Save Page As, "Web
+Page, HTML Only") or with
+
+```bash
+curl -L --proto-redir =https --max-time 300 -A "Mozilla/5.0" \
+  -o docs/Millepede/draftman_page.html \
+  https://www.desy.de/~kleinwrt/MP2/doc/html/draftman_page.html
+```
+
+`--update-acts` downloads ACTS from the sPHENIX fork (pin a commit with
+`--acts-ref <full hash>`); without it the script only rebuilds the
+Millepede-II part from the saved page and keeps the ACTS copy.
+`python -m stdiag.fetch_tracking_docs --check` reports what the snapshot
+holds, offline.
 
 This creates a virtual environment in `.venv/` (git-ignored), activates it,
 and installs the package and pytest into it; it needs Python 3.10 or newer
 (`python3 --version`). Run `source .venv/bin/activate` again in every new
 terminal, and `deactivate` to leave it. Use `".[dev,api]"` to add the
-Anthropic API triage backend. The last two lines download the ACTS 45.0.0 and
-Millepede-II documentation into `tracking_docs/` for the tracking expert, and
-create a `labels.csv` to fill in with the configuration of each label.
+Anthropic API triage backend. The fetch line builds the ACTS 45.0.0 and
+Millepede-II snapshot in `tracking_docs/` for the tracking expert, and the
+last line creates a `labels.csv` to fill in with the configuration of each
+label.
 
-The AI steps use the Claude Code CLI (`claude`, logged in). Three locations
+The AI steps use the Claude Code CLI (`claude`, logged in). These locations
 can be set with environment variables:
 
 | Variable | Default | Used by |
 |---|---|---|
 | `STDIAG_CORESOFTWARE` | `../coresoftware` next to this repository | coresoftware and tracking experts |
 | `STDIAG_TRACKING_DOCS` | `tracking_docs/` in this repository (git-ignored) | tracking expert |
+| `STDIAG_MILLEPEDE_HTML` | `docs/Millepede/draftman_page.html` (git-ignored) | `fetch_tracking_docs`, which builds the Millepede-II part of the snapshot from it |
 | `STDIAG_RUNS_DIR` | `runs/` in this repository (git-ignored) | `compare_runs`, which creates `<a>_vs_<b>/` folders there |
 
 `coresoftware` is not part of this repository; point the variable to the local coresoftware checkout of https://github.com/sPHENIX-Collaboration/coresoftware (full history needed for the experts).
@@ -560,8 +581,8 @@ outside an explicit list refused (`--permission-mode dontAsk`).
 | Agent | Works in | Tools | Reads | Produces |
 |---|---|---|---|---|
 | Triage | empty temporary folder | none | the comparison data it is given (flagged rows, stave overviews of flagged layers, not-comparable and notable-unflagged entries) | grouped findings with priorities |
-| Coresoftware expert | `coresoftware/` | Read, Grep, Glob, read-only git (`log`, `show`, `diff`, `blame`, `status`, ...) | code, history, uncommitted changes, `labels.csv`, code map | ranked hypotheses: commit, file:line, mechanism, test, confidence; or "no code change explains this" |
-| Tracking expert | `coresoftware/` + `tracking_docs/` + `docs/TrackingLiterature/` | as above + web fetch limited to www.desy.de, acts-project.github.io, github.com, raw.githubusercontent.com + `stdiag-literature search` | ACTS 45.0.0 docs and headers, Millepede-II manual, sPHENIX code, alignment literature (best passages for the finding in its request; more by searching) | per-hypothesis verdict (consistent / partly / inconsistent / cannot verify) with documentation, code and literature citations |
+| Coresoftware expert | `coresoftware/` | Read, Grep, Glob, read-only git (`log`, `show`, `diff`, `blame`, `status`, ...; no `git grep`, whose `-O` runs a program; `--output` and branch changes blocked) | code, history, uncommitted changes, `labels.csv`, code map | ranked hypotheses: commit, file:line, mechanism, test, confidence; or "no code change explains this" |
+| Tracking expert | `coresoftware/` + `tracking_docs/` + `docs/TrackingLiterature/` | as above + `stdiag-literature search`; no network access (no web fetch or search) | ACTS 45.0.0 docs, headers and sources (local snapshot), Millepede-II manual, sPHENIX code, alignment literature (best passages for the finding in its request; more by searching) | per-hypothesis verdict (consistent / partly / inconsistent / cannot verify) with documentation, code and literature citations |
 
 "Notable unflagged" entries (z > 5 but below the minimum shift, width
 significance > 4, or fewer than 200 entries) are shown to the triage so it
@@ -789,13 +810,15 @@ regenerates everything from `make_synth.C`.
 ## Versions and references
 
 - **ACTS 45.0.0**: `sPHENIX` branch of `github.com/sPHENIX-Collaboration/acts`,
-  commit `2f27de2d0f` (2026-06-01), the version sPHENIX builds against;
-  `coresoftware` itself does not pin it. Upstream `main` is a newer API.
+  the version sPHENIX builds against; `coresoftware` itself does not pin
+  it. Upstream `main` is a newer API. The commit in the snapshot is in
+  `tracking_docs/SOURCES.json`.
 - **Millepede-II manual V04-17-06**
-  (https://www.desy.de/~kleinwrt/MP2/doc/html/draftman_page.html).
-- Refresh the snapshot with
-  `python -m stdiag.fetch_tracking_docs [--acts-ref <branch-or-tag>]`;
-  provenance is recorded in `tracking_docs/SOURCES.json`.
+  (https://www.desy.de/~kleinwrt/MP2/doc/html/draftman_page.html), saved by
+  hand to `docs/Millepede/`; its checksum is in `tracking_docs/SOURCES.json`.
+- Refresh ACTS with `python -m stdiag.fetch_tracking_docs --update-acts
+  [--acts-ref <branch, tag or full hash>]`; after saving a new copy of the
+  manual page, run it without options.
 - **Literature retrieval**: `granite-embedding:30m` (IBM, Apache 2.0) from
   Ollama's library, served by Ollama 0.40.18; `pdftotext` from poppler
   26.11.0 (both Homebrew). The model name, its digest and the chunker
@@ -845,9 +868,8 @@ starts; restart Claude Code after changing them.
 These block `/feedback`, `/bug` and `/share` (which upload the conversation,
 kept for 5 years), the session survey and its transcript-sharing follow-up,
 usage metrics and error reports, and Claude-drafted feedback reports. They
-do not stop the agents' prompts from being sent, and the tracking expert's
-web fetches still send each hostname to `api.anthropic.com` for a safety
-check.
+do not stop the agents' prompts from being sent. No agent fetches web
+pages: the experts read only local files.
 
 Source: https://code.claude.com/docs/en/data-usage (checked 2026-10-04).
 
@@ -935,7 +957,7 @@ Not yet run live: the vertex page and VERTEX rows on real `track_ntp`,
 fit and `out_of_range` on real `ntp` files, the triage on real productions
 (it is tested on synthetic comparisons only), both experts and their
 dialogue (including whether
-the read-only and web-domain limits hold in practice), the API backend, and
+the read-only and no-network limits hold in practice), the API backend, and
 `run_stability` on any real run series.
 
 ## Notes on interpretation

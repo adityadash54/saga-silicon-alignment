@@ -38,17 +38,45 @@ ALLOWED_TOOLS = [
     "Read", "Grep", "Glob",
     "Bash(git log *)", "Bash(git show *)", "Bash(git diff *)",
     "Bash(git blame *)", "Bash(git rev-parse *)", "Bash(git merge-base *)",
-    "Bash(git branch *)", "Bash(git ls-files *)", "Bash(git grep *)",
+    # git branch only in listing forms (no create, delete, rename, copy).
+    "Bash(git branch)", "Bash(git branch -a)", "Bash(git branch -r)",
+    "Bash(git branch --contains *)", "Bash(git branch -a --contains *)",
+    "Bash(git branch -r --contains *)", "Bash(git branch --list *)",
+    "Bash(git ls-files *)",
     "Bash(git status)", "Bash(git status *)", "Bash(git diff)",
 ]
-DISALLOWED_TOOLS = ["Edit", "Write", "NotebookEdit", "Bash(git diff --output*)"]
+# Not allowed: git grep. Its -O<program> (also bundled, e.g. -iO<program>)
+# runs a program, which no permission pattern can reliably exclude; the
+# Grep tool searches the working tree, and git show <rev>:<path> and
+# git log -S/-G search other revisions.
+#
+# Deny rules win over allow rules. They close the write paths that the
+# broad allow rules above would otherwise let through: --output=<file>
+# writes a file (diff, log, show); git branch flags that change refs (git
+# itself also refuses them together with --list or --contains).
+# Each rule comes with and without a leading "*", in case "*" does not
+# match an empty string.
+GIT_WRITE_OR_EXECUTE = [
+    rule for command, flags in (
+        ("git diff", ["--output"]), ("git log", ["--output"]),
+        ("git show", ["--output"]),
+        ("git branch", ["-d", "-D", "--delete", "-m", "-M", "--move", "-c",
+                        "-C", "--copy", "-f", "--force", "-u",
+                        "--set-upstream", "--unset-upstream",
+                        "--edit-description", "-t", "--track",
+                        "--no-track"]))
+    for flag in flags
+    for rule in (f"Bash({command} {flag}*)", f"Bash({command} * {flag}*)")
+]
+DISALLOWED_TOOLS = ["Edit", "Write", "NotebookEdit", *GIT_WRITE_OR_EXECUTE]
 
 EXPERT_PROMPT = """\
 You are an sPHENIX tracking and alignment software expert investigating the \
 coresoftware git repository in the current directory. You are read-only: \
 use Read, Grep, Glob and read-only git commands (git log, show, diff, blame, \
-rev-parse, merge-base, branch, ls-files, grep, status). Never try to modify \
-anything.
+rev-parse, merge-base, branch for listing, ls-files, status; git grep is not \
+available: use Grep on the working tree, git show <rev>:<path> or git log \
+-S/-G for other revisions). Never try to modify anything.
 
 You receive one finding from a comparison of MVTX/INTT local residual \
 distributions between a reference input and a comparison input, the \
@@ -118,6 +146,30 @@ def run_claude(command: list[str], request: str, cwd: Path,
                  f"(exit {result.returncode}): "
                  f"{result.stderr.strip() or 'no output'}")
     return answer
+
+
+def run_claude_json(command: list[str], request: str, cwd: Path,
+                    who: str) -> tuple[str, dict]:
+    """Run one `claude -p --output-format json` turn: (text, usage).
+
+    usage holds the served models, token counts, duration and number of
+    turns, in the same form as the triage's --usage-out file.
+    """
+    raw = run_claude(command, request, cwd, who)
+    try:
+        reply = json.loads(raw)
+    except json.JSONDecodeError:
+        reply = {"result": raw}
+    text = str(reply.get("result", "")).strip()
+    if reply.get("is_error") or not text:
+        sys.exit(f"ERROR: the Claude Code CLI failed for the {who}: "
+                 f"{reply.get('subtype') or 'no result text'}")
+    usage = {"models": sorted(reply.get("modelUsage", {})),
+             "usage": reply.get("usage", {}),
+             "duration_ms": reply.get("duration_ms"),
+             "num_turns": reply.get("num_turns"),
+             "subtype": reply.get("subtype")}
+    return text, usage
 
 
 def session_arguments(session_id: str | None, resume: bool) -> list[str]:

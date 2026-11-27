@@ -1,23 +1,26 @@
 # Tracking references for checking coresoftware expert answers
 
-Read the local snapshot in `tracking_docs/` first (made by
-`fetch_tracking_docs.py`; see `tracking_docs/SOURCES.json`). Fetch live only
-when the snapshot lacks something, and say so when you do.
+All sources are local; there is no network access. The snapshot in
+`tracking_docs/` (made by `fetch_tracking_docs.py`) records in
+`tracking_docs/SOURCES.json` the ACTS commit and the checksum of the
+Millepede-II page it was built from. If something you need is not in the
+snapshot or the coresoftware checkout, say so and use "cannot verify".
 
 ## Versions
 
-- **ACTS 45.0.0**: `sPHENIX` branch of `github.com/sPHENIX-Collaboration/acts`,
-  commit 2f27de2d0f (2026-06-01). This is the fork sPHENIX builds against;
-  `coresoftware` itself does not pin a version. Upstream `main` is a newer,
-  different API. If you rely on anything not in the snapshot, read it at
-  this commit (`raw.githubusercontent.com/sPHENIX-Collaboration/acts/2f27de2d0f.../<path>`),
-  not at `main`, and confirm the version from `tracking_docs/acts/version_number`.
+- **ACTS 45.0.0**: `sPHENIX` branch of `github.com/sPHENIX-Collaboration/acts`
+  (commit in `SOURCES.json`; confirm the version from
+  `tracking_docs/acts/version_number`). This is the fork sPHENIX builds
+  against; `coresoftware` itself does not pin a version. Upstream `main` is
+  a newer, different API, so do not rely on remembered upstream behaviour.
 - **Millepede-II V04-17-06**: draft manual by V. Blobel, Doxygen edition by
   C. Kleinwort.
 
 ## Millepede-II (`tracking_docs/millepede/draftman_page.txt`, anchors as `{#anchor}`)
 
-| Topic | Anchor | Live URL |
+The URLs are for citing only; they cannot be fetched.
+
+| Topic | Anchor | URL |
 |---|---|---|
 | Measurements, residual z = y − f(x), local/global derivatives, sigma; sign consistency | `{#ssec-meapar}` | https://www.desy.de/~kleinwrt/MP2/doc/html/draftman_page.html#ssec-meapar |
 | Large problems: global vs local parameters | `{#ssec_large}` | ...#ssec_large |
@@ -38,6 +41,9 @@ when the snapshot lacks something, and say so when you do.
 | Track fitting (KF, GX2F, GSF) | `docs/groups/track_fitting.md`; `docs/old/core/reconstruction/track_fitting.md`; `Core/include/Acts/TrackFitting/` |
 | Alignment example (ACTS's own approach) | `docs/old/examples/alignment.md` |
 | Versioning policy | `docs/pages/versioning.md` |
+| Implementations behind the core headers | `Core/src/` |
+| `ActsExamples/...` includes used by sPHENIX (EventData, Framework, Utilities, MagneticField, TGeoDetector) | `Examples/Framework/`, `Examples/Detectors/` (Glob for the header name) |
+| `ActsPlugins/Root`, `ActsPlugins/Json` includes | `Plugins/Root/`, `Plugins/Json/` |
 
 ## sPHENIX code that uses them (`coresoftware/`, read-only)
 
