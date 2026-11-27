@@ -7,11 +7,21 @@ network libraries and sends nothing to any external service.
 
 Criteria (input 1 = reference, input 2 = comparison), evaluated separately for
 every (detector, layer, stave, chip, coord):
-  width : |(sigma2 - sigma1) / sigma1| > --sigma-rel-threshold      (default 0.20)
+  width : |(sigma2 - sigma1) / sigma1| > --sigma-rel-threshold      (default 0.10)
+          AND its significance > --width-significance-threshold      (default 3)
   mean  : |mu2 - mu1| / sqrt(dmu1^2 + dmu2^2) > --z-threshold        (default 1.96)
           AND |mu2 - mu1| > minimum shift for (detector, coord)
-  A chip is flagged if the width OR the mean criterion fires. Both fits must
-  have fit_status == "ok"; anything else is reported as not comparable.
+  entries: |a2/a1 - 1| > --entries-rel-threshold                     (default 0.05)
+          AND |a2 - a1| / sqrt(N1/t1^2 + N2/t2^2) > --entries-z-threshold (default 3)
+          with a = N/t: t = 1 (--entries-normalization raw, default), the
+          detector total or the layer total of chip rows of the same
+          coordinate in that input (detector, layer)
+  A chip is flagged if the width, the mean OR the entries criterion fires.
+  The width and mean tests need fit_status == "ok" in both inputs; anything
+  else is reported as not comparable. The entries test also applies to not
+  comparable rows, and a row missing from one input counts as 0 entries; it is
+  skipped for a detector with no entries at all in either input (e.g. VERTEX
+  rows without track_ntp).
 MVTX/INTT rows with chip = -1 are fits to the sum of all chips of the
 stave/ladder ("stave rows"); they get the same criteria and minimum shifts as
 the chips and are counted separately (level "stave") in the summary.
@@ -161,6 +171,75 @@ def parse_min_shift_overrides(overrides: list[str]) -> dict:
     return minimum_shift
 
 
+ENTRIES_NORMALIZATIONS = ("raw", "detector", "layer")
+
+
+def entries_rule(n1, n2, t1, t2, rel_cut: float, z_cut: float):
+    """Entries test on counts n1 (reference) and n2 (comparison).
+
+    a = n / t, with t = 1 (raw), the detector total or the layer total of the
+    same input. Returns (fires, rel, z):
+      rel = a2 / a1 - 1    (inf when a row appears, -1 when it vanishes)
+      z   = |a2 - a1| / sqrt(n1 / t1^2 + n2 / t2^2)   (Poisson errors on the
+            counts; the totals' own errors are neglected)
+    A row fires when |rel| > rel_cut and z > z_cut; a row with no entries in
+    either input never fires (rel and z are NaN).
+    """
+    n1, n2 = np.asarray(n1, float), np.asarray(n2, float)
+    t1, t2 = np.asarray(t1, float), np.asarray(t2, float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        a1, a2 = n1 / t1, n2 / t2
+        rel = np.where(a1 > 0, a2 / a1 - 1.0, np.where(a2 > 0, np.inf, np.nan))
+        sigma = np.sqrt(n1 / t1 ** 2 + n2 / t2 ** 2)
+        z = np.where(sigma > 0, np.abs(a2 - a1) / sigma, np.nan)
+        fires = (np.abs(rel) > rel_cut) & (z > z_cut)
+    return fires, rel, z
+
+
+def entries_columns(merged: pd.DataFrame, normalization: str,
+                    rel_cut: float, z_cut: float) -> pd.DataFrame:
+    """entries_rel, entries_z and flag_entries for every row of merged.
+
+    Missing rows count as 0 entries. Totals sum the chip rows (chip >= 0) of
+    the same detector and coordinate (and layer for "layer"); stave rows
+    (chip = -1) are divided by the same total. A detector with no entries at
+    all in either input is not tested.
+    """
+    if normalization not in ENTRIES_NORMALIZATIONS:
+        raise ValueError(f"entries normalization must be one of "
+                         f"{ENTRIES_NORMALIZATIONS}, got {normalization!r}")
+    n1 = merged["entries_1"].fillna(0.0).astype(float)
+    n2 = merged["entries_2"].fillna(0.0).astype(float)
+    chips = merged["chip"] >= 0
+    detector_keys = [merged["detector"], merged["coord"]]
+
+    def totals(counts, keys):
+        return (counts.where(chips, 0.0).groupby(keys).transform("sum"))
+
+    present = ((totals(n1, detector_keys) > 0)
+               & (totals(n2, detector_keys) > 0))
+    if normalization == "raw":
+        t1 = t2 = pd.Series(1.0, index=merged.index)
+    else:
+        keys = detector_keys + ([merged["layer"]] if normalization == "layer"
+                                else [])
+        t1, t2 = totals(n1, keys), totals(n2, keys)
+    fires, rel, z = entries_rule(n1, n2, t1, t2, rel_cut, z_cut)
+    return pd.DataFrame({
+        "entries_rel": np.where(present, rel, np.nan),
+        "entries_z": np.where(present, z, np.nan),
+        "flag_entries": present.to_numpy() & fires}, index=merged.index)
+
+
+def describe_entries(row: pd.Series) -> str:
+    n1 = 0.0 if pd.isna(row["entries_1"]) else row["entries_1"]
+    n2 = 0.0 if pd.isna(row["entries_2"]) else row["entries_2"]
+    change = ("new" if np.isinf(row["entries_rel"])
+              else f"{100.0 * row['entries_rel']:+.0f}%")
+    return (f"entries {change} ({n1:.0f} -> {n2:.0f}, "
+            f"z={row['entries_z']:.1f})")
+
+
 def describe_row(row: pd.Series, reference_label: str,
                  comparison_label: str) -> str:
     if not row["comparable"]:
@@ -168,7 +247,11 @@ def describe_row(row: pd.Series, reference_label: str,
                     ((reference_label, row["fit_status_1"]),
                      (comparison_label, row["fit_status_2"]))
                     if status != "ok"]
-        return "not comparable: " + (", ".join(problems) or "invalid fit errors")
+        text = "not comparable: " + (", ".join(problems)
+                                     or "invalid fit errors")
+        if row["flag_entries"]:
+            return f"{describe_entries(row)}; {text}"
+        return text
 
     parts = []
     if row["flag_mean"]:
@@ -177,12 +260,17 @@ def describe_row(row: pd.Series, reference_label: str,
     if row["flag_width"]:
         direction = "broader" if row["sigma_rel"] > 0 else "narrower"
         parts.append(f"width {100.0 * row['sigma_rel']:+.0f}% ({direction})")
+    if row["flag_entries"]:
+        parts.append(describe_entries(row))
     return "; ".join(parts)
 
 
 def compare_tables(reference: pd.DataFrame, comparison: pd.DataFrame,
                    sigma_rel_threshold: float, z_threshold: float,
-                   minimum_shift: dict) -> pd.DataFrame:
+                   minimum_shift: dict, entries_rel_threshold: float = 0.05,
+                   entries_z_threshold: float = 3.0,
+                   entries_normalization: str = "raw",
+                   width_significance_threshold: float = 3.0) -> pd.DataFrame:
     reference_label = reference["label"].iloc[0]
     comparison_label = comparison["label"].iloc[0]
     merged = reference[KEY_COLUMNS + FIT_COLUMNS].merge(
@@ -225,11 +313,17 @@ def compare_tables(reference: pd.DataFrame, comparison: pd.DataFrame,
         & (np.abs(merged["delta_mu_mm"]) > merged["min_shift_mm"]))
     merged["flag_width"] = (
         merged["comparable"]
-        & (np.abs(merged["sigma_rel"]) > sigma_rel_threshold))
-    merged["flagged"] = merged["flag_mean"] | merged["flag_width"]
+        & (np.abs(merged["sigma_rel"]) > sigma_rel_threshold)
+        & (merged["sigma_rel_significance"] > width_significance_threshold))
+    merged = merged.join(entries_columns(
+        merged, entries_normalization, entries_rel_threshold,
+        entries_z_threshold))
+    merged["flagged"] = (merged["flag_mean"] | merged["flag_width"]
+                         | merged["flag_entries"])
+    # Only the entries test can flag a row that is not comparable.
     merged["comparison_status"] = np.select(
-        [~merged["comparable"], merged["flagged"]],
-        ["not_comparable", "flagged"], default="unchanged")
+        [merged["flagged"], ~merged["comparable"]],
+        ["flagged", "not_comparable"], default="unchanged")
     merged["reason"] = merged.apply(
         describe_row, axis=1, args=(reference_label, comparison_label))
     merged.insert(0, "comparison_label", comparison_label)
@@ -247,6 +341,7 @@ def count_flags(frame: pd.DataFrame) -> dict:
         "flag_width": int(frame["flag_width"].sum()),
         "flag_mean_and_width": int(
             (frame["flag_mean"] & frame["flag_width"]).sum()),
+        "flag_entries": int(frame["flag_entries"].sum()),
     }
 
 
@@ -316,20 +411,28 @@ def build_report(flags: pd.DataFrame, summary: dict) -> str:
               f"{comparison['csv']} ({comparison['sha256'][:12]})", ""]]),
         "## Criteria",
         f"- Width: \\|(sigma2 - sigma1)/sigma1\\| > "
-        f"{criteria['sigma_rel_threshold']}",
+        f"{criteria['sigma_rel_threshold']} and its significance > "
+        f"{criteria['width_significance_threshold']}",
         f"- Mean: \\|mu2 - mu1\\| / sqrt(dmu1^2 + dmu2^2) > "
         f"{criteria['z_threshold']} and \\|mu2 - mu1\\| > minimum shift "
         "(" + ", ".join(f"{key} {1000.0 * value:g} um" for key, value in
                         criteria["min_shift_mm"].items()) + ")",
-        "- Flagged if width OR mean fires; both fits must have status ok.",
+        f"- Entries ({criteria['entries_normalization']}): \\|a2/a1 - 1\\| > "
+        f"{criteria['entries_rel_threshold']} and z > "
+        f"{criteria['entries_z_threshold']}, a = N"
+        + ("" if criteria["entries_normalization"] == "raw" else
+           f" / {criteria['entries_normalization']} total")
+        + "; missing rows count as 0 entries.",
+        "- Flagged if width OR mean OR entries fires; width and mean need "
+        "both fits with status ok, entries applies to every row.",
         "## Counts",
         markdown_table(list(counts.keys()), [list(counts.values())]),
         markdown_table(
             ["Detector", "Layer", "Coord", "Level", "Comparable", "Flagged",
-             "Mean", "Width", "Not comparable"],
+             "Mean", "Width", "Entries", "Not comparable"],
             [[row["detector"], row["layer"], row["coord"], row["level"],
               row["comparable"], row["flagged"], row["flag_mean"],
-              row["flag_width"], row["not_comparable"]]
+              row["flag_width"], row["flag_entries"], row["not_comparable"]]
              for row in summary["by_detector_layer_coord"]]),
     ]
 
@@ -341,13 +444,14 @@ def build_report(flags: pd.DataFrame, summary: dict) -> str:
         sections.append(markdown_table(
             ["Det", "Layer", "Stave", "Chip", "Coord", "dmu [um]", "z",
              "Separation", "sigma1 [um]", "sigma2 [um]", "sigma rel",
-             "sigma rel signif.", "N1", "N2", "Reason"],
+             "sigma rel signif.", "N1", "N2", "N rel", "N z", "Reason"],
             [[row.detector, row.layer, row.stave, row.chip, row.coord,
               format_um(row.delta_mu_mm), f"{row.mu_z:.1f}",
               f"{row.separation:.2f}", format_um(row.sigma_1_mm),
               format_um(row.sigma_2_mm), f"{row.sigma_rel:+.2f}",
               f"{row.sigma_rel_significance:.1f}", f"{row.entries_1:.0f}",
-              f"{row.entries_2:.0f}", row.reason]
+              f"{row.entries_2:.0f}", f"{row.entries_rel:+.3f}",
+              f"{row.entries_z:.1f}", row.reason]
              for row in flagged.itertuples()]))
 
     sections.append("## Not comparable")
@@ -384,9 +488,15 @@ def build_report(flags: pd.DataFrame, summary: dict) -> str:
         "sinusoidal dca_xy shift versus phi that can average to almost zero "
         "in chip -1. The vertex is reconstructed from the same tracks, which "
         "biases these residuals toward zero.",
-        "- The width test has no significance requirement. Check the "
-        "'sigma rel signif.' column: values below about 2 indicate a width "
-        "change compatible with statistical fluctuation.",
+        "- The width test requires a significance above the threshold "
+        "('sigma rel signif.' column), so width changes compatible with "
+        "statistical fluctuation are not flagged; at low statistics only "
+        "large width changes can pass it.",
+        "- The entries test with raw counts flags nearly every row when the "
+        "two inputs have different numbers of events or tracks; then use "
+        "--entries-normalization detector (or layer), which compares each "
+        "row's share of its detector (or layer) total and so only finds local "
+        "changes. At z > 3 about 0.3% of unchanged rows pass by chance.",
         "- INTT z residuals are not Gaussian (strip length sets the width), "
         "so INTT z fit parameters are only indicative.",
         "- Different run conditions (field, luminosity, track momentum "
@@ -405,12 +515,27 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path,
                         help="write every output here (default: a fresh "
                              "runs/<a>_vs_<b> per comparison)")
-    parser.add_argument("--sigma-rel-threshold", type=float, default=0.20)
+    parser.add_argument("--sigma-rel-threshold", type=float, default=0.10,
+                        help="width test: minimum relative width change "
+                             "(default 0.10)")
+    parser.add_argument("--width-significance-threshold", type=float,
+                        default=3.0,
+                        help="width test: minimum significance of the width "
+                             "change (default 3)")
     parser.add_argument("--z-threshold", type=float, default=1.96)
     parser.add_argument("--min-shift", action="append", default=[],
                         metavar="DETECTOR:COORD=MM",
                         help="override a minimum mean shift, e.g. "
                              "INTT:z=0.5 or VERTEX:dca_xy=0.02 (repeatable)")
+    parser.add_argument("--entries-rel-threshold", type=float, default=0.05,
+                        help="entries test: minimum relative change "
+                             "(default 0.05)")
+    parser.add_argument("--entries-z-threshold", type=float, default=3.0,
+                        help="entries test: minimum significance (default 3)")
+    parser.add_argument("--entries-normalization",
+                        choices=ENTRIES_NORMALIZATIONS, default="raw",
+                        help="entries test: compare raw counts (default), or "
+                             "each row's share of its detector or layer total")
     args = parser.parse_args()
 
     if len(args.tables) < 2:
@@ -424,10 +549,15 @@ def main() -> None:
 
     criteria = {
         "sigma_rel_threshold": args.sigma_rel_threshold,
+        "width_significance_threshold": args.width_significance_threshold,
         "z_threshold": args.z_threshold,
         "min_shift_mm": {f"{detector}:{coord}": value for
                          (detector, coord), value in minimum_shift.items()},
-        "logic": "flagged = width OR (z AND minimum shift); "
+        "entries_rel_threshold": args.entries_rel_threshold,
+        "entries_z_threshold": args.entries_z_threshold,
+        "entries_normalization": args.entries_normalization,
+        "logic": "flagged = (width change AND width significance) OR (z AND "
+                 "minimum shift) OR (entries change AND entries z); "
                  "reference = first table",
     }
 
@@ -457,7 +587,17 @@ def main() -> None:
             fresh_run_dir(out_dir, args.tables)
         flags = compare_tables(reference, comparison,
                                args.sigma_rel_threshold, args.z_threshold,
-                               minimum_shift)
+                               minimum_shift, args.entries_rel_threshold,
+                               args.entries_z_threshold,
+                               args.entries_normalization,
+                               args.width_significance_threshold)
+        for detector in sorted(set(flags["detector"])):
+            rows = flags["detector"] == detector
+            if flags.loc[rows, "entries_rel"].isna().all() and (
+                    flags.loc[rows, ["entries_1", "entries_2"]].fillna(0)
+                    .sum().gt(0).any()):
+                print(f"Warning: {detector} has no entries in one input; "
+                      "the entries test is skipped for it")
         inputs = {"reference": describe_input(args.tables[0], reference),
                   "comparison": describe_input(path, comparison)}
         summary = build_summary(flags, inputs, criteria)

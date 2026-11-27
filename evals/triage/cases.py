@@ -4,8 +4,9 @@ Each case compares a reference ("Ref") with a comparison ("Cmp") built by
 synthetic.make_synthetic_fit_tables with the listed injections. `expected`
 is the triage group a matched finding must have: A (coherent stave-wide
 mean shift), B (isolated chip/sensor mean shift), C (width only), D (mean
-and width), None (should produce no flags, e.g. not comparable or below
-threshold), or "either" (statistically limited; never penalised).
+and width), E (entries-only flags, e.g. a ladder missing from one input),
+None (should produce no flags, e.g. not comparable or below threshold), or
+"either" (statistically limited; never penalised).
 """
 
 from __future__ import annotations
@@ -24,8 +25,9 @@ def inject(name, detector, layer, staves, chips=None, coord=None, *,
 
 LOW_STATS_LADDER = inject("low_stats_ladder", "INTT", 3, [3], labels=BOTH,
                           entries=5, expected=None)
+# Absent from the comparison: the entries test flags its rows (-100%).
 MISSING_LADDER = inject("missing_ladder", "INTT", 5, [9], missing=True,
-                        expected=None)
+                        expected="E")
 # The entry override applies to every label (see the generator); the width
 # change applies to the comparison only.
 LOW_STATS_WIDTH = inject("low_stats_width", "MVTX", 0, [9], [8], "rphi",

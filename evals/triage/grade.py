@@ -13,6 +13,10 @@ Rules (approved in PROPOSED_CASES.md):
 Injections expected to produce no flags (expected None) and statistically
 limited ones (expected "either") are never required; rows of "either"
 injections count as injection rows, so findings about them are not false.
+Injections expected in group E (entries-only flags, e.g. a missing ladder)
+are required like A-D. Entries flags from Poisson noise (about 0.3% of
+unchanged rows at z > 3) belong to no injection: in group E they are fine,
+in a group A-D finding they make it a false finding.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from synthetic.make_synthetic_fit_tables import matches
 # is the track-phi bin.
 KEY = ["detector", "layer", "stave", "chip", "coord"]
 FLAG_GROUPS = {"A", "B", "C", "D"}
+REQUIRED_GROUPS = FLAG_GROUPS | {"E"}
 MATCH_FRACTION = 0.8
 MERGE_FRACTION = 0.5
 
@@ -47,7 +52,7 @@ def grade(case: dict, flags: pd.DataFrame, findings: dict) -> dict:
     required, tolerated = [], set()
     for injection in case["injections"]:
         rows = injection_rows(injection, flagged)
-        if injection["expected"] in FLAG_GROUPS and rows:
+        if injection["expected"] in REQUIRED_GROUPS and rows:
             required.append((injection, rows))
         elif injection["expected"] == "either":
             tolerated |= rows

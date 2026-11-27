@@ -32,7 +32,11 @@ def test_injections_match_generator():
 
 
 @pytest.mark.parametrize("comparison, flagged, not_comparable", [
-    ("Iter1", 17, 19), ("Iter2", 105, 9)])
+    # Iter1: 15 mean/width flags (two low-statistics width rows no longer
+    # pass the width significance) + 10 rows of the ladder missing from Iter1
+    # (entries -100%) + 2 entries-noise rows. Iter2: 103 mean/width flags
+    # (the same two rows dropped) + 2 entries-noise rows + 1 width-noise row.
+    ("Iter1", 27, 19), ("Iter2", 106, 9)])
 def test_reference_matches_injected_truth(reference_comparison, comparison,
                                           flagged, not_comparable):
     stem = f"Iter0_vs_{comparison}"
