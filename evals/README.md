@@ -9,9 +9,9 @@ genuinely needed.
 |---|---|---|---|---|
 | `triage/` | Does the triage group flags correctly without inventing findings? | Synthetic comparisons with known injected changes, including no-change and distractor cases | Code, from `findings_*.json` against the injected truth | Cases and grading approved (`triage/PROPOSED_CASES.md`, harness `4d598628dc6c`); self-test passes; live run 21/21 pass, 7 key cases repeated with identical findings (2026-11-26) |
 | `coresoftware_expert/` | Does the expert find the commit behind a known effect? | Past coresoftware commits with a known residual effect, described as findings | Code: commit hit in top 1 / top 3; every cited hash checked with git | Planned |
-| `tracking_expert/` | Are its verdicts right? | Hypotheses with known verdicts (correct, sign-flipped residual, ACTS API absent in v45) | Code: verdict label | Planned |
+| `tracking_expert/` | Are its verdicts right, and does it catch wrong physics and citations that don't check out? | Coresoftware-expert answers whose hypotheses have known verdicts (`cases.json`, local only; `cases.example.json` shows the format) | Code, from the JSON verdict block: verdict per hypothesis, code-verified flag, version caveat | Harness built, self-test passes on the examples; cases being drafted |
 | `retrieval/` | Does the literature search find the right paper and page, also in the list the tracking expert's request gets? | Your questions, or findings searched as the agent does, with expected file and page range, plus no-answer questions (`retrieval/cases.json`, git-ignored because it names your papers; `cases.example.json` shows the format) | Code: recall@5, recall@10, MRR, hit@6 (2/paper) for bm25, dense, hybrid; highest cosine of no-answer against answerable cases | Run on 32 approved cases (2026-11-27): questions fine (hybrid hit@6 18/18), agent path weaker in hybrid than in BM25 alone (hit@6 4/8 against 7/8); see Results below |
-| `permissions/` | Do the read-only and web-domain limits hold? | Prompts that try to edit files, run forbidden commands or fetch disallowed sites | End state: checkout unchanged, nothing forbidden fetched | Planned |
+| `permissions/` | Do the read-only and no-network limits hold? | Prompts that try to edit files, run forbidden commands or reach the network | End state: checkout unchanged, nothing fetched | Planned |
 | `dialogue/` | How do the two experts converge? | Findings with known causes | Convergence rate, turns used, questions to the reviewer, status-format compliance | Planned |
 
 Run outputs (transcripts, reports) are git-ignored; cases, runners and
@@ -60,6 +60,53 @@ python evals/triage/run_eval.py --reps 2 --variant pilot \
   145k for the whole-layer shift with 145 flagged rows), 53 s on average.
 - **Not covered**: real productions; a per-case consistency rate (that
   needs more repetitions).
+
+## Tracking expert eval
+
+```bash
+export STDIAG_CORESOFTWARE=/path/to/coresoftware       # full history
+python evals/tracking_expert/run_eval.py --self-test   # grader and commit check, no AI
+python evals/tracking_expert/run_eval.py --approve-harness   # reviewer only
+python evals/tracking_expert/run_eval.py --cases <id>,<id> --reps 1   # pilot
+python evals/tracking_expert/run_eval.py --reps 2      # full run
+python evals/tracking_expert/run_eval.py --report      # aggregate results
+```
+
+Each case is a finding with a coresoftware-expert answer whose hypotheses
+have verdicts agreed by the reviewer. The tracking expert runs exactly as
+in `review.py check` (one-shot, read-only, no network access, in the
+coresoftware checkout, with the ACTS / Millepede-II snapshot and the
+literature index) and ends its answer with a JSON verdict block, which is
+graded by code. Needs a complete `tracking_docs/` snapshot
+(`python -m stdiag.fetch_tracking_docs --check`). Every result row records
+the ACTS commit and the Millepede-II page checksum the agent read.
+
+The cases are the evaluation set and are not published: `cases.json`
+and `PROPOSED_CASES.md` are git-ignored, and this README reports only
+aggregate results. Copy `cases.example.json` to `cases.json` and replace
+the made-up examples; only cases with `"status": "approved"` are run. The
+harness checksum covers the runner, grader, case loader, the tracking
+expert, the docs map and the local cases file, so any change to the
+cases needs a new approval.
+
+Hypothesis kinds: correct mechanism, physics error, citation that does
+not check out, ACTS version problem, claim that cannot be checked from
+the available sources. Scores per run:
+
+- **pass** (headline): the verdict block is valid, every hypothesis gets
+  an accepted verdict (and code-verified value, where graded), and an
+  expected version caveat is given;
+- **verdict accuracy**: fraction of hypotheses with an accepted verdict;
+- **error catch**: physics errors and unverifiable citations judged
+  inconsistent or cannot verify;
+- **false alarms**: correct hypotheses judged inconsistent;
+- **citation check**: unverifiable citations marked `code_verified: no`;
+- tokens and latency per run, and verdict counts per hypothesis kind.
+
+Variants: `--no-literature` (without the literature index) and
+`--effort medium|high`. A rerun skips (case, repetition) pairs already in
+`results.jsonl`. With about 14 cases × 2 repetitions only large
+differences between variants are meaningful.
 
 ## Retrieval eval
 

@@ -1,0 +1,70 @@
+{
+  "coresoftware_revision": "0000000000000000000000000000000000000000",
+  "cases": [
+    {
+      "id": "example-two-hypotheses",
+      "status": "draft",
+      "request": {
+        "comparison": "Example-B (comparison) vs Example-A (reference)",
+        "finding": {
+          "id": "F1",
+          "group": "A",
+          "title": "Example: stave-wide local r-phi mean shift",
+          "evidence": "Example numbers only: mean shift +8 um on all chips of one stave.",
+          "entries": [{"detector": "MVTX", "layer": 1, "stave": 4, "chip": -1, "coord": "rphi"}]
+        },
+        "flags_table_rows": []
+      },
+      "answer": "### Summary\nExample answer with two hypotheses.\n\n### Hypotheses\n| rank | commit | date | author | files:lines | mechanism | fit to the signature | test to confirm | confidence |\n|---|---|---|---|---|---|---|---|---|\n| 1 | 1111111 | 2000-01-01 | Example Author | example/File.cc:10 | Example mechanism A | Example fit | Example test | medium |\n| 2 | 2222222 | 2000-01-02 | Example Author | example/Other.cc:20 | Example mechanism B | Example fit | Example test | low |\n\n### Examined and ruled out\nNone.\n\n### Non-code causes to check\nNone.\n\n### Commands run\n`git log`\n",
+      "expect_version_caveat": false,
+      "hypotheses": [
+        {
+          "number": 1,
+          "kind": "correct",
+          "accept": ["consistent", "partly consistent"],
+          "code_verified": ["yes"],
+          "cited_commits": ["1111111"],
+          "fabricated_commits": [],
+          "why": "Example: the reviewer's reasoning for the expected verdict goes here."
+        },
+        {
+          "number": 2,
+          "kind": "physics_error",
+          "accept": ["inconsistent"],
+          "code_verified": null,
+          "cited_commits": ["2222222"],
+          "fabricated_commits": [],
+          "why": "Example: why this mechanism contradicts the documented convention."
+        }
+      ]
+    },
+    {
+      "id": "example-version",
+      "status": "draft",
+      "request": {
+        "comparison": "Example-B (comparison) vs Example-A (reference)",
+        "finding": {
+          "id": "F2",
+          "group": "B",
+          "title": "Example: single-chip local z mean shift",
+          "evidence": "Example numbers only.",
+          "entries": [{"detector": "MVTX", "layer": 0, "stave": 1, "chip": 2, "coord": "z"}]
+        },
+        "flags_table_rows": []
+      },
+      "answer": "### Summary\nExample answer with one hypothesis.\n\n### Hypotheses\n| rank | commit | date | author | files:lines | mechanism | fit to the signature | test to confirm | confidence |\n|---|---|---|---|---|---|---|---|---|\n| 1 | 3333333 | 2000-01-03 | Example Author | example/Third.cc:30 | Example mechanism relying on a toolkit function | Example fit | Example test | low |\n\n### Examined and ruled out\nNone.\n\n### Non-code causes to check\nNone.\n\n### Commands run\n`git log`\n",
+      "expect_version_caveat": true,
+      "hypotheses": [
+        {
+          "number": 1,
+          "kind": "version",
+          "accept": ["cannot verify", "inconsistent"],
+          "code_verified": ["no", "partly"],
+          "cited_commits": [],
+          "fabricated_commits": ["3333333"],
+          "why": "Example: why the claim cannot hold for the toolkit version in the snapshot."
+        }
+      ]
+    }
+  ]
+}
