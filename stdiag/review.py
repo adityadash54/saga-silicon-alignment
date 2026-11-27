@@ -60,10 +60,10 @@ DIALOGUE_STATUS_TEXT = {
 # rows (-1 = all tracks, 0-13 = phi bins over [-pi, pi)).
 ENTRY_KEYS = ["detector", "layer", "stave", "chip", "coord"]
 ROW_COLUMNS = ENTRY_KEYS + [
-    "comparison_status", "flag_mean", "flag_width", "delta_mu_mm", "mu_z",
-    "separation", "sigma_1_mm", "sigma_2_mm", "sigma_rel",
-    "sigma_rel_significance", "entries_1", "entries_2", "fit_status_1",
-    "fit_status_2", "reason",
+    "comparison_status", "flag_mean", "flag_width", "flag_entries",
+    "delta_mu_mm", "mu_z", "separation", "sigma_1_mm", "sigma_2_mm",
+    "sigma_rel", "sigma_rel_significance", "entries_1", "entries_2",
+    "entries_rel", "entries_z", "fit_status_1", "fit_status_2", "reason",
 ]
 
 
@@ -119,6 +119,10 @@ def flagged_rows(findings_path: Path, findings: dict, finding: dict) -> list:
     if flags_path is None or not flags_path.exists():
         return []
     flags = pd.read_csv(flags_path, dtype={"detector": str, "coord": str})
+    for column, default in (("flag_entries", False), ("entries_rel", None),
+                            ("entries_z", None)):
+        if column not in flags.columns:  # tables from before the entries test
+            flags[column] = default
     wanted = pd.DataFrame(finding["entries"])[ENTRY_KEYS]
     rows = flags.merge(wanted, on=ENTRY_KEYS, how="inner")
     return json.loads(rows[ROW_COLUMNS].to_json(orient="records",

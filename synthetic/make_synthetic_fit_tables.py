@@ -102,9 +102,14 @@ def entries_override(detector, layer, stave, chip, coord,
 
 
 def build_tables(seed: int, injections: list[dict] | None = None,
-                 labels: dict[str, str] | None = None
+                 labels: dict[str, str] | None = None,
+                 error_scale: dict | None = None
                  ) -> dict[str, pd.DataFrame]:
-    """Fit tables per label; defaults are the synthetic test's injections."""
+    """Fit tables per label; defaults are the synthetic test's injections.
+
+    error_scale optionally maps (detector, coord) to (mu factor, sigma
+    factor) that multiply the ideal fit errors (and so the fluctuations);
+    None keeps the ideal errors and the random stream unchanged."""
     injections = INJECTIONS if injections is None else injections
     labels = LABELS if labels is None else labels
     rng = np.random.default_rng(seed)
@@ -113,16 +118,20 @@ def build_tables(seed: int, injections: list[dict] | None = None,
         for layer, stave_count in zip(layers, staves):
             for stave in range(stave_count):
                 for chip in range(chips):
+                    # In ntp a cluster carries both residuals, so a chip's
+                    # r-phi and z rows share their expected entry count.
+                    expected = int(rng.poisson(NOMINAL_ENTRIES[detector]))
                     for coord in ("rphi", "z"):
                         nominal = NOMINAL_SIGMA_MM[(detector, coord)]
                         baseline[(detector, layer, stave, chip, coord)] = (
                             rng.normal(0.0, 0.25 * nominal),
                             nominal * rng.uniform(0.9, 1.1),
-                            int(rng.poisson(NOMINAL_ENTRIES[detector])))
+                            expected)
 
     tables = {}
     for label, listfile in labels.items():
         rows = []
+        chip_entries = {}  # one Poisson draw per chip and label
         for key, (offset, sigma, entries) in baseline.items():
             detector, layer, stave, chip, coord = key
             active = [injection for injection in injections
@@ -134,13 +143,20 @@ def build_tables(seed: int, injections: list[dict] | None = None,
             true_sigma = sigma * np.prod([injection.get("sigma_scale", 1.0)
                                           for injection in active])
             override = entries_override(*key, injections)
-            n_entries = override if override is not None else int(
-                rng.poisson(entries))
+            if override is not None:
+                n_entries = override
+            else:
+                if key[:4] not in chip_entries:
+                    chip_entries[key[:4]] = int(rng.poisson(entries))
+                n_entries = chip_entries[key[:4]]
 
             core_entries = 0.95 * n_entries
             status = "ok" if core_entries >= 10 else "low_stats"
-            mu_err = true_sigma / np.sqrt(core_entries)
-            sigma_err = true_sigma / np.sqrt(2.0 * core_entries)
+            mu_scale, sigma_scale = ((1.0, 1.0) if error_scale is None else
+                                     error_scale.get((detector, coord),
+                                                     (1.0, 1.0)))
+            mu_err = mu_scale * true_sigma / np.sqrt(core_entries)
+            sigma_err = sigma_scale * true_sigma / np.sqrt(2.0 * core_entries)
             if status == "ok":
                 mu = true_mu + rng.normal(0.0, mu_err)
                 fit_sigma = abs(true_sigma + rng.normal(0.0, sigma_err))

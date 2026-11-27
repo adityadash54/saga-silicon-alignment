@@ -54,10 +54,10 @@ DEFAULT_MODEL = "claude-opus-5-5"
 # [-pi, pi)).
 ROW_COLUMNS = [
     "detector", "layer", "stave", "chip", "coord", "comparison_status",
-    "flag_mean", "flag_width", "delta_mu_mm", "mu_z", "separation",
-    "min_shift_mm", "sigma_1_mm", "sigma_2_mm", "sigma_rel",
-    "sigma_rel_significance", "entries_1", "entries_2", "fit_status_1",
-    "fit_status_2", "reason",
+    "flag_mean", "flag_width", "flag_entries", "delta_mu_mm", "mu_z",
+    "separation", "min_shift_mm", "sigma_1_mm", "sigma_2_mm", "sigma_rel",
+    "sigma_rel_significance", "entries_1", "entries_2", "entries_rel",
+    "entries_z", "fit_status_1", "fit_status_2", "reason",
 ]
 
 SYSTEM_PROMPT = """\
@@ -89,6 +89,16 @@ phi is the momentum azimuth at the point of closest approach, so a phi bin \
 selects tracks through that azimuthal sector of the silicon. The phi bins \
 and chip -1 use the same tracks, so they are not independent.
 
+Besides the mean and width tests there is an entries test (flag_entries): \
+the number of clusters on the chip (entries_1, entries_2) changed by more \
+than the threshold and significantly beyond Poisson fluctuation \
+(entries_rel = relative change, entries_z = significance). Depending on the \
+criteria it compares raw counts or each row's share of its detector or layer \
+total; with raw counts, a different number of events in the two inputs \
+changes every row together. Unlike the other tests it also applies to \
+not-comparable rows, and a row missing from one input counts as 0 entries, \
+so a vanished stave or ladder is flagged as an entries loss of -100%.
+
 The flags are final. Never recompute, add or remove flags. Your job is to \
 interpret them using the tools, which read the comparison tables.
 
@@ -99,12 +109,18 @@ misalignment.
 B. Isolated chip/sensor mean shifts (the stave row unchanged, or shifted by \
 only about the chip's share of the entries): likely chip-level misalignment, \
 or a local hardware/calibration change.
-C. Width-only changes: check sigma_rel_significance; values below ~2 are \
-compatible with statistical fluctuation.
+C. Width-only changes: the width test already requires a significant \
+change (sigma_rel_significance above the threshold in the criteria); quote \
+sigma_rel and its significance.
 D. Mean and width changes together.
 E. Statistics, fit or coverage issues: entries near the statistics limit or \
 with suspicious fits, not-comparable entries (missing, low statistics or a \
-failed fit in either input) and notable-unflagged entries.
+failed fit in either input), notable-unflagged entries, and entries-only \
+flags (a change in the number of clusters with no mean or width flag: for \
+example a dead, masked or newly active region, or a change in acceptance).
+An entries flag together with a mean shift goes in the group of the shift \
+(A, B or D); mention the entries change as evidence, because clusters lost \
+from the track association window can accompany a misalignment.
 Also report patterns across layers, staves, coordinates and the \
 not-comparable entries (for example a whole stave missing in one input). \
 Use list_notable_unflagged for entries that are noteworthy but not flagged \
@@ -172,6 +188,14 @@ class ComparisonData:
 
 def to_json(payload) -> str:
     return json.dumps(payload, default=str)
+
+
+def with_entries_columns(flags: pd.DataFrame) -> pd.DataFrame:
+    """Flags tables written before the entries test lack its columns."""
+    defaults = {"flag_entries": False, "entries_rel": np.nan,
+                "entries_z": np.nan}
+    return flags.assign(**{column: value for column, value in defaults.items()
+                           if column not in flags.columns})
 
 
 def frame_rows(frame: pd.DataFrame, limit: int) -> str:
@@ -251,6 +275,7 @@ def get_stave_overview(detector: str = "", coord: str = "",
         "flagged": by_stave["flagged"].sum(),
         "flag_mean": by_stave["flag_mean"].sum(),
         "flag_width": by_stave["flag_width"].sum(),
+        "flag_entries": by_stave["flag_entries"].sum(),
         "median_delta_mu_mm": shifts.median(),
         "std_delta_mu_mm": shifts.std(),
         "fraction_positive_shift": shifts.apply(
@@ -259,7 +284,8 @@ def get_stave_overview(detector: str = "", coord: str = "",
             stave_rows["comparable"]),
         "stave_flagged": stave_rows["flagged"].astype(float),
     }).fillna({"chips": 0, "comparable": 0, "flagged": 0, "flag_mean": 0,
-               "flag_width": 0, "stave_flagged": 0}).reset_index()
+               "flag_width": 0, "flag_entries": 0,
+               "stave_flagged": 0}).reset_index()
     overview["stave_flagged"] = overview["stave_flagged"].astype(bool)
     if only_with_flags:
         overview = overview.loc[(overview["flagged"] > 0)
@@ -595,13 +621,21 @@ def build_report(summary: dict, flags_path: Path, summary_path: Path,
         f"{summary_path.name} (sha256 {sha256sum(summary_path)[:12]}).",
         "## Criteria",
         f"- Width: |(sigma2 - sigma1)/sigma1| > "
-        f"{criteria['sigma_rel_threshold']}\n"
+        f"{criteria['sigma_rel_threshold']}"
+        + (f" and its significance > "
+           f"{criteria['width_significance_threshold']}"
+           if "width_significance_threshold" in criteria else "")
+        + "\n"
         f"- Mean: |mu2 - mu1| / sqrt(dmu1^2 + dmu2^2) > "
         f"{criteria['z_threshold']} and |mu2 - mu1| > minimum shift "
         f"({min_shift})\n"
-        "- Flagged if width OR mean fires.",
-        f"Flagged {counts['flagged']} of {counts['comparable']} comparable "
-        f"entries ({counts['flag_mean']} mean, {counts['flag_width']} width, "
+        f"- Entries ({criteria.get('entries_normalization', 'raw')}): "
+        f"|a2/a1 - 1| > {criteria.get('entries_rel_threshold', 0.05)} and "
+        f"z > {criteria.get('entries_z_threshold', 3.0)}\n"
+        "- Flagged if width OR mean OR entries fires.",
+        f"Flagged {counts['flagged']} entries, {counts['comparable']} "
+        f"comparable ({counts['flag_mean']} mean, {counts['flag_width']} "
+        f"width, {counts.get('flag_entries', 0)} entries, "
         f"{counts['not_comparable']} not comparable).",
         validation_text,
         "## AI triage",
@@ -636,8 +670,8 @@ def main() -> None:
                              "as JSON (claude-code backend)")
     args = parser.parse_args()
 
-    ComparisonData.flags = pd.read_csv(
-        args.flags, dtype={"detector": str, "coord": str, "reason": str})
+    ComparisonData.flags = with_entries_columns(pd.read_csv(
+        args.flags, dtype={"detector": str, "coord": str, "reason": str}))
     ComparisonData.summary = json.loads(args.summary.read_text())
 
     if args.dry_run and args.backend == "claude-code":

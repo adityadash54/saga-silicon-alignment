@@ -8,8 +8,16 @@ only the comparison outputs, never the injections. Each case runs twice
 
 Expected group follows the triage prompt: **A** coherent stave/ladder-wide
 mean shift, **B** isolated chip/sensor mean shift, **C** width-only change,
-**D** mean and width together, **NC** not comparable (no A–D finding
-expected).
+**D** mean and width together, **E** entries-only flags (a change in the
+number of clusters, e.g. a ladder missing from one input), **NC** not
+comparable (no A–D finding expected).
+
+Changed 2026-11-26, when the entries test (|N2/N1 − 1| > 5% and z > 3) was
+added to `compare_runs`: the missing ladder is now flagged (entries −100%)
+and expected in group E, and every case also carries a few entries flags
+from Poisson noise (about 0.3% of unchanged rows, about 3 rows per case;
+not counted in "Flagged rows" below). Those belong in group E; in an A–D
+finding they make it a false finding.
 
 | id | tag | Injection(s) in the comparison | Flagged rows | Expected |
 |---|---|---|---|---|
@@ -29,10 +37,10 @@ expected).
 | width-chip | width | MVTX L0 stave 2 chip 5, both coords, σ × 1.4 | 2 | C |
 | width-stave | width | MVTX L1 stave 9, all chips, r-φ σ × 1.3 | 9 | C |
 | mean-width-chip | mean+width | MVTX L2 stave 3 chip 4, r-φ +10 µm and σ × 1.4 | 1 | D |
-| missing-ladder | nc | INTT L5 ladder 9 absent from the comparison | 0 | no A–D finding; NC noted |
+| missing-ladder | nc | INTT L5 ladder 9 absent from the comparison | 8 (entries −100%) | E |
 | sub-threshold-stave | distractor | MVTX L1 stave 2, all chips, r-φ +4 µm (below the 5 µm minimum) | 0 | no A–D finding |
 | low-stats-width | distractor | MVTX L0 stave 9 chip 8 with 40 entries in both, r-φ σ × 1.3 | 0 or 1 | no penalty either way |
-| mixed-1 | mixed | the synthetic test's Iter1 (stave, chip, sensor, width, sub-threshold, low-stats, missing ladder) | 13 | A, B, B, C |
+| mixed-1 | mixed | the synthetic test's Iter1 (stave, chip, sensor, width, sub-threshold, low-stats, missing ladder) | 21 | A, B, B, C, E |
 | mixed-2 | mixed | the synthetic test's Iter2 (half layer, chip, width) | 93 | A, B, C |
 
 ## Proposed grading (code only, from `findings_*.json`)
@@ -45,7 +53,10 @@ expected).
   least 80% of that finding's flagged rows come from it.
 - **group accuracy**: fraction of matched injections with the expected group.
 - **false findings**: findings in groups A–D whose rows are mostly not
-  flagged by any injection (counts the null and distractor cases).
+  flagged by any injection (counts the null and distractor cases, and
+  entries-noise rows put in A–D).
+- Injections expected in group E (the missing ladder) are required and
+  matched like A–D.
 - **merged**: findings that hold most of two different injections.
 - **validation**: the triage output check passed.
 

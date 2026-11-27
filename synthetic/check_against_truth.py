@@ -32,6 +32,11 @@ from synthetic.make_synthetic_fit_tables import (
 
 LOW_STATS_ENTRIES = 200
 STAVE_CHIP = -1
+# Entries-only flags on unchanged rows below this significance are expected
+# Poisson noise of the entries test (z > 3 passes ~0.3% of unchanged rows).
+ENTRIES_NOISE_Z = 5.0
+# The same for width-only flags (significance > 3 passes ~0.1% by chance).
+WIDTH_NOISE_SIGNIFICANCE = 5.0
 # A stave row with only some of its chips changed is "either" when its
 # approximate change is within this range of a threshold (as a fraction of it).
 PARTIAL_STAVE_BAND = (0.5, 1.5)
@@ -68,7 +73,8 @@ def expected_stave_status(key: tuple, reference: str, comparison: str,
               for label in (reference, comparison)}
     missing = [[state[2] for state in chips] for chips in states.values()]
     if any(all(chips) for chips in missing):
-        return "not_comparable"
+        # A stave absent from one input: the entries test sees 0 entries.
+        return "flagged"
     if any(any(chips) for chips in missing) or any(
             state[3] for chips in states.values() for state in chips):
         return "either"
@@ -102,7 +108,10 @@ def expected_status(row: pd.Series, reference: str, comparison: str,
         return expected_stave_status(key, reference, comparison, criteria)
     offset1, scale1, missing1, entries = injected_state(reference, key)
     offset2, scale2, missing2, _ = injected_state(comparison, key)
-    if missing1 or missing2 or (entries and 0.95 * entries < 10):
+    if missing1 != missing2:
+        # Missing from one input = 0 entries there: an entries flag.
+        return "flagged"
+    if missing1 or (entries and 0.95 * entries < 10):
         return "not_comparable"
 
     if entries and entries < LOW_STATS_ENTRIES:
@@ -143,6 +152,18 @@ def main() -> None:
         injection_names, axis=1, args=(reference, comparison))
     agrees = ((flags["expected"] == "either")
               | (flags["expected"] == flags["comparison_status"]))
+    # The entries test (z > 3) and the width test (significance > 3) let a
+    # small fraction of unchanged rows pass by chance (about 0.3% and 0.1%);
+    # such a flag on a row with no injected change is expected noise, not a
+    # disagreement, unless it is far beyond chance (z or significance >= 5).
+    entries_flag = flags.get("flag_entries", pd.Series(False, flags.index))
+    entries_noise = ~entries_flag | (flags.get("entries_z", np.inf)
+                                     < ENTRIES_NOISE_Z)
+    width_noise = ~flags["flag_width"] | (flags["sigma_rel_significance"]
+                                          < WIDTH_NOISE_SIGNIFICANCE)
+    noise = (~agrees & ~flags["flag_mean"] & entries_noise & width_noise
+             & flags["expected"].isin(["unchanged", "not_comparable"]))
+    agrees |= noise
 
     print(f"== {comparison} vs {reference} ==")
     print(pd.crosstab(flags["expected"], flags["comparison_status"],
@@ -153,6 +174,14 @@ def main() -> None:
         per_injection = (injected.groupby(["injections", "comparison_status"])
                          .size().unstack(fill_value=0))
         print(per_injection.to_string())
+
+    if noise.any():
+        print(f"\nEntries or width flags on rows without an injected change, "
+              f"accepted as statistical noise (z or significance < "
+              f"{ENTRIES_NOISE_Z:g}): {int(noise.sum())} of {len(flags)} rows "
+              f"(about {0.004 * len(flags):.1f} expected)")
+        print(flags.loc[noise, ["detector", "layer", "stave", "chip", "coord",
+                                "reason"]].to_string(index=False))
 
     mismatches = flags.loc[~agrees]
     if mismatches.empty:

@@ -58,7 +58,7 @@ def flags_with_stave_rows(synthetic_outputs):
         row["chip"] = -1
         row["delta_mu_mm"] = delta
         row[["comparable", "flagged", "flag_mean"]] = True
-        row["flag_width"] = False
+        row[["flag_width", "flag_entries"]] = False
         rows.append(row)
     return pd.concat([flags, pd.DataFrame(rows)], ignore_index=True), quiet
 

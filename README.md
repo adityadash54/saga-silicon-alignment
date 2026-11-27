@@ -290,7 +290,10 @@ Expect `... N flagged of M comparable (K not comparable)` and three files in
 `$RUN`. The files inside are named from the `label` column of each table,
 hence the `*` in the commands below. Read both the flagged entries and the
 not-comparable list: an entry out of range in one input can hide a large
-shift. Running this step again deletes `$RUN` and starts again, including any
+shift. N can include not-comparable entries flagged by the entries test (for
+example a ladder missing from one input). If the two inputs have different
+numbers of events, add `--entries-normalization detector`; with raw counts
+nearly every entry is then flagged. Running this step again deletes `$RUN` and starts again, including any
 triage and review files from the earlier run.
 
 **3. Triage (AI).** The first command is a preview of the prompt that would be sent. The second
@@ -398,8 +401,8 @@ What you should get:
 - **`compare_runs`** prints `example_iter1 vs example_iter0: 10 flagged of
   57 comparable (3 not comparable)`. `ls` shows `flags_…csv`, `report_…md`
   and `summary_…json`.
-- **The report** shows the counts row `60 | 57 | 3 | 10 | 10 | 0 | 0` (rows,
-  comparable, not comparable, flagged, mean, width, both).
+- **The report** shows the counts row `60 | 57 | 3 | 10 | 10 | 0 | 0 | 0`
+  (rows, comparable, not comparable, flagged, mean, width, both, entries).
   - **Flagged:** INTT L3 ladder 0 sensor 2 z, +1457.3 µm; MVTX L0 stave 0
     chip 3 r-φ, +9.3 µm; chip 5 r-φ, −300.8 µm; seven VERTEX dca_xy φ bins
     (0, 1, 2, 7, 8, 9, 10), between +16.5 and −12.3 µm.
@@ -499,12 +502,45 @@ detector, layer, stave, chip and coordinate:
 
 | Test | Fires when |
 |---|---|
-| Width | \|(σ₂ − σ₁)/σ₁\| > 0.20 |
+| Width | \|(σ₂ − σ₁)/σ₁\| > 0.10 **and** its significance \|σ₂/σ₁ − 1\| / δ(σ₂/σ₁) > 3 |
 | Mean | \|μ₂ − μ₁\| / √(δμ₁² + δμ₂²) > 1.96 **and** \|μ₂ − μ₁\| > minimum shift (MVTX 5 µm; INTT r-φ 20 µm, z 1 mm; VERTEX dca_xy 10 µm, dca_z 20 µm) |
+| Entries | \|a₂/a₁ − 1\| > 0.05 **and** \|a₂ − a₁\| / √(N₁/t₁² + N₂/t₂²) > 3, with a = N/t: t = 1 for raw counts (default), or the detector or layer total of chip rows of that coordinate (`--entries-normalization detector\|layer`) |
 
-A chip is flagged if either test fires; entries whose fit is not `ok` in
-both inputs are reported as not comparable. The AI never changes these
-flags.
+A chip is flagged if any test fires. The width and mean tests need a fit
+with status `ok` in both inputs; other entries are reported as not
+comparable. The entries test applies to every row, including not-comparable
+ones, and a row missing from one input counts as 0 entries, so a vanished
+ladder is flagged as −100%. It is skipped for a detector with no entries in
+one input (for example VERTEX rows without `track_ntp`). The AI never
+changes these flags.
+
+- **Entries z** is the change in units of its Poisson error: N₁ = 3000 →
+  N₂ = 3160 (+5.3%) gives z = 2.0, which can be noise; at 30000 entries the
+  same +5.3% gives z = 6.4. At z > 3 about 0.3% of unchanged rows are
+  flagged by chance (about 4 of 1550), always in pairs, since a chip's r-φ
+  and z rows share their clusters.
+- **Raw counts** flag almost every row when the two inputs have different
+  numbers of events or tracks; use `--entries-normalization detector` (or
+  `layer`) then, which compares each row's share of its detector (or layer)
+  and so finds only local changes, such as a dead or masked region.
+- Sensitivity (synthetic, `python -m synthetic.scan_flag_sensitivity`):
+  at nominal statistics (3000 MVTX, 6000 INTT entries per chip) a change of
+  about ±11% (MVTX) or ±8% (INTT) is flagged 90% of the time; below about
+  300 entries per chip, no change up to ±20% reaches 90%. At 800–1500
+  entries per chip, z > 3 is the effective cut (Poisson noise is 3–4%, so
+  the 5% threshold never decides): a loss of about 13–15% is flagged half
+  the time and about 15–20% reliably.
+
+**Width test choice.** The significance requirement keeps unchanged chips
+from being flagged when their statistics are low: at most about 0.4% at any
+statistics down to 100 entries per chip, where the former default (20%, no
+significance) flagged about 5%. The sweep assumes ideal fit errors
+(δσ = σ/√(1.9 N)); the ROOT fits of the synthetic reference have width
+errors about 1.56 times larger for MVTX and INTT r-φ (the Gaussian is refitted
+within ±2σ), so a real chip with N entries behaves like a sweep chip with
+about N/2.4. At 800–1500 real entries per chip the 10% cut with significance
+> 3 then flags a broadening of about +21–29% 90% of the time, close to the
+former default, and about 0.1% of unchanged rows pass by chance.
 
 **Triage output check** (no AI): every flagged entry must appear in a
 finding, and every entry a finding cites must exist in the flags table;
@@ -662,7 +698,7 @@ have an eval in `evals/` that is built but not yet run. Details are in
 |---|---|---|---|
 | **Steps without AI** (fits, comparison) | Synthetic data with known injected changes → fit macro → `compare_runs` → `check_against_truth` / `check_demo` | Every row's status (flagged, unchanged, not comparable) matches the injected truth; statistically limited rows may go either way | Fit tables: 1312/1312 rows, 2 comparisons, 20 seeds. From ROOT files: 1550/1550 rows, reference seed and seeds 1–8. Stave/chip demo: current fit passes; the old settings fail in the 4 expected entries |
 | **Run-by-run stability** (no AI) | 60-run synthetic series of fit tables (`make_synthetic_run_series`) with 15 injected effects: chip, sensor, stave, half-layer and whole-layer steps, a transient, a drift, a one-run outlier, a bad run, a width change, and decoys that must not be reported (3 µm step, sub-threshold drift, 5%-luminosity runs, a missing ladder) → `run_stability` → `check_run_stability` | Every injection found with its expected class within ±2 runs (±6 for drift start and end); decoys give nothing; at most 2 unexplained change points per scan; a series with no changes (`--null`) gives none | 15 seeds × (injected + null): 30/30 pass. Null series: 0 change points in all 15; before the final criteria the methods fire 1.3 (BOCPD), 1.2 (PELT) and 0.9 (CUSUM) times per scan (target about 1). Injected series: 1 unexplained change point in total (seed 3: a half-layer step labelled a drift starting 3 runs early) |
-| **Code around the agents** | `pytest` with scripted agent replies (no AI) | Triage output validation (missing or invented entries, invalid groups, no JSON), no truth in the triage prompt, dialogue routing (convergence, turn limits, questions to the reviewer, missing status blocks), run folders | All 88 pytest tests pass, 25 of them on the triage output and the review and dialogue logic and 28 on the literature index (with a fake embedder); they also run in CI |
+| **Code around the agents** | `pytest` with scripted agent replies (no AI) | Triage output validation (missing or invented entries, invalid groups, no JSON), no truth in the triage prompt, dialogue routing (convergence, turn limits, questions to the reviewer, missing status blocks), run folders | All 94 pytest tests pass, 25 of them on the triage output and the review and dialogue logic and 28 on the literature index (with a fake embedder); they also run in CI |
 | **AI triage** (`evals/triage/`) | 21 synthetic cases × 2 repetitions: no change, stave-wide, single chip or sensor, width, mean and width, missing ladder, sub-threshold and low-statistics decoys, two mixed. Each runs the real comparison and the real triage; the runner refuses to start until the reviewer approves a checksum of the harness | Graded by code from `findings_*.json`. A run passes if validation passed, every injected change that produces flags is matched by one finding (≥80% overlap both ways) in the expected group, and there are no invented or merged findings. Recall, group accuracy, cost and time are also recorded | Grader self-test passes on all 21 cases: a perfect answer passes everywhere, and empty or lumped-together answers fail where they should. The benchmark has not been run yet, so there is no pass rate. Two earlier live runs on the synthetic Iter1/Iter2 comparisons grouped every injected change correctly; that is too few to quote an accuracy, and 42 runs will still carry about ±15 percentage points |
 | **Literature retrieval** (`evals/retrieval/`, no AI apart from the local embedding model) | Your own questions with an expected paper and page range (`cases.json`, local only; `cases.example.json` shows the format) → `stdiag-literature` search in bm25, dense and hybrid mode | A case passes at k if a top-k passage comes from an expected paper and overlaps its pages; recall@5, recall@10, MRR@10 | Runner built. The cases are drafts written by Claude from the extracted text and not yet checked by the reviewer; dense and hybrid have not been run, so there are no results yet |
 
@@ -697,8 +733,13 @@ significant shift below the minimum shift, and a low-statistics chip. Iter2
 has half of MVTX layer 2 shifted in z. The full list is in
 `synthetic/reference/injections.csv`.
 
-Expected result: Iter1 vs Iter0 flags 17 entries (19 not comparable),
-Iter2 vs Iter0 flags 105 (9 not comparable), both truth checks print `PASS`,
+Expected result: Iter1 vs Iter0 flags 27 entries (19 not comparable): 15
+from the mean and width tests, the 10 rows of the missing ladder (entries
+−100%) and 2 entries-noise rows. Iter2 vs Iter0 flags 106 (9 not
+comparable): 103 from the mean and width tests, 2 entries-noise rows and 1
+width-noise row. Both truth checks print `PASS` (they list the noise rows
+they accept: entries z or width significance between 3 and 5 on a row with
+no injected change),
 and step 6 prints `matches the reference` three times. The script exits
 non-zero otherwise. See [`synthetic/reference/README.md`](synthetic/reference/README.md).
 
@@ -887,8 +928,11 @@ the read-only and web-domain limits hold in practice), the API backend, and
 - INTT z uses a box-convolved-with-Gaussian fit, tested only on synthetic
   boxes; INTT z stave rows sum boxes of two lengths and are only indicative.
   Core fits hide changes in the tails.
-- Width flags at low statistics are unreliable; check the width-significance
-  column.
+- Width flags need a significance above 3, so low-statistics fluctuations
+  are not flagged; at low statistics only large width changes pass.
+- An entries-only flag with z just above 3 on one chip is likely Poisson
+  noise (about 4 such rows per comparison). Entries changes also follow
+  changes in track selection, hit association or masking, not only hardware.
 - Different run conditions (field, luminosity, track momentum spectrum,
   selection, alignment or geometry tag) change widths without any detector
   change.

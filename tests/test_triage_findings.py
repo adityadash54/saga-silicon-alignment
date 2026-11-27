@@ -15,11 +15,19 @@ REST = [{"detector": "MVTX", "layer": 0, "stave": 2, "chip": 5, "coord": "rphi"}
         {"detector": "MVTX", "layer": 0, "stave": 2, "chip": 5, "coord": "z"},
         {"detector": "MVTX", "layer": 2, "stave": 10, "chip": 3, "coord": "z"},
         {"detector": "INTT", "layer": 4, "stave": 6, "chip": 1, "coord": "rphi"}]
+# Entries flags: the INTT ladder missing from Iter1 (-100%) and one MVTX chip
+# whose cluster count moved by Poisson noise beyond z = 3 (seed 20261001).
+COVERAGE = ([{"detector": "INTT", "layer": 5, "stave": 9, "chip": chip,
+              "coord": coord} for chip in range(4) for coord in ("rphi", "z")]
+            + [{"detector": "MVTX", "layer": 2, "stave": 13, "chip": 6,
+                "coord": coord} for coord in ("rphi", "z")])
 GOOD = [{"id": "F1", "group": "A", "title": "stave shift", "priority": 1,
          "entries": STAVE},
         {"id": "F2", "group": "B", "title": "the rest", "priority": 2,
-         "entries": REST}]
-GHOST = {"id": "F3", "group": "B", "title": "ghost", "priority": 3,
+         "entries": REST},
+        {"id": "F3", "group": "E", "title": "entries changes", "priority": 3,
+         "entries": COVERAGE}]
+GHOST = {"id": "F4", "group": "B", "title": "ghost", "priority": 4,
          "entries": [{"detector": "MVTX", "layer": 9, "stave": 0, "chip": 0,
                       "coord": "z"}]}
 
@@ -31,14 +39,15 @@ def response(findings):
 
 @pytest.mark.parametrize("text, passed, unassigned, unknown, invalid", [
     (response(GOOD), True, 0, 0, 0),
-    (response(GOOD[:1]), False, 4, 0, 0),
+    (response(GOOD[:1]), False, 4 + 10, 0, 0),
     (response(GOOD + [GHOST]), False, 0, 1, 0),
-    (response([GOOD[0], {**GOOD[1], "group": "not_comparable"}]), False, 0, 0, 1),
+    (response([GOOD[0], {**GOOD[1], "group": "not_comparable"}, GOOD[2]]),
+     False, 0, 0, 1),
     ("### Overview\nNo block.", False, 0, 0, 0),
     (response([{**GOOD[0], "entries": [{**entry, "chip": float(entry["chip"])}
-                                       for entry in STAVE]}, GOOD[1]]),
+                                       for entry in STAVE]}, *GOOD[1:]]),
      True, 0, 0, 0),
-    (response([GOOD[0], {**GOOD[1], "entries": REST + STAVE[:1]}]),
+    (response([GOOD[0], {**GOOD[1], "entries": REST + STAVE[:1]}, GOOD[2]]),
      False, 0, 0, 0),
 ])
 def test_findings_validation(tmp_path, synthetic_outputs, monkeypatch, text,
