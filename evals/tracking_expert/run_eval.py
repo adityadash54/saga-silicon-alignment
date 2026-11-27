@@ -57,7 +57,7 @@ HARNESS_PATHS = ["evals/tracking_expert/run_eval.py",
                  "stdiag/tracking_expert.py", "stdiag/coresoftware_expert.py",
                  "stdiag/fetch_tracking_docs.py", "maps/tracking_docs_map.md"]
 SCORES = ["pass", "json_ok", "verdict_acc", "error_catch", "false_alarm",
-          "fabrication_caught", "version_caveat"]
+          "citation_check", "version_caveat"]
 MAX_ATTEMPTS = 2
 WRITE_LOCK = threading.Lock()
 
@@ -245,8 +245,9 @@ def report(variant_dir: Path) -> None:
           f"{len({r['prompt_id'] for r in results})} case(s), "
           f"{len(errors)} failed attempt(s)")
     for score in SCORES:
-        values = [r["grade"][score] for r in results
-                  if r["grade"][score] is not None]
+        # .get: rows from before a metric was added or renamed lack it
+        values = [r["grade"].get(score) for r in results
+                  if r["grade"].get(score) is not None]
         if values:
             total = sum(float(v) for v in values)
             label = (f"{int(total)}/{len(values)}"

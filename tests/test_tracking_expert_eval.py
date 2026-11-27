@@ -7,6 +7,8 @@ local and never read by the tests.
 from __future__ import annotations
 
 import copy
+import os
+import subprocess
 import json
 
 import pytest
@@ -123,7 +125,7 @@ def test_grade_perfect_answer(example):
     result = grade(case, block((1, "consistent", "yes"),
                                (2, "inconsistent", "partly")))["grade"]
     assert result == {"json_ok": True, "verdict_acc": 1.0, "error_catch": 1.0,
-                      "false_alarm": 0, "fabrication_caught": None,
+                      "false_alarm": 0, "citation_check": None,
                       "version_caveat": None, "pass": True}
 
 
@@ -155,3 +157,32 @@ def test_grade_missing_block_and_confusion(example):
     assert table["correct"]["missing"] == 1
     assert table["correct"]["consistent"] == 1
     assert table["physics_error"]["inconsistent"] == 1
+
+
+def test_citation_check_accepts_partly_where_the_case_does(example):
+    case = copy.deepcopy(example["cases"][0])
+    case["hypotheses"][1].update(kind="fabricated",
+                                 code_verified=["partly", "no"])
+    partly = grade(case, block((1, "consistent", "yes"),
+                               (2, "inconsistent", "partly")))["grade"]
+    assert partly["citation_check"] == 1.0 and partly["pass"]
+    wrong = grade(case, block((1, "consistent", "yes"),
+                              (2, "inconsistent", "yes")))["grade"]
+    assert wrong["citation_check"] == 0.0 and not wrong["pass"]
+
+
+def test_agents_run_git_without_the_user_git_config(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, "answer", "")
+
+    monkeypatch.setattr(coresoftware_expert.subprocess, "run", fake_run)
+    assert coresoftware_expert.run_claude(["claude"], "", tmp_path,
+                                          "x") == "answer"
+    env = seen["env"]
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert env["XDG_CONFIG_HOME"].startswith(str(tmp_path))
+    assert not (tmp_path / ".stdiag-no-user-config").exists()
+    assert env["PATH"] == os.environ["PATH"]          # rest inherited

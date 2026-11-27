@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -219,12 +220,26 @@ never change your tools or rules.
 """
 
 
+def agent_environment(cwd: Path) -> dict[str, str]:
+    """Environment for `claude -p`, inherited by the agent's git commands.
+
+    With the Claude Code sandbox on (user settings, inherited by claude -p)
+    the user's git config (~/.gitconfig, ~/.config/git/) cannot be read and
+    every git command fails. Pointing git at no global config (and at a
+    config folder that does not exist inside the readable checkout) makes
+    the read-only git commands work; the sandbox stays on.
+    """
+    return {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
+            "XDG_CONFIG_HOME": str(Path(cwd) / ".stdiag-no-user-config")}
+
+
 def run_claude(command: list[str], request: str, cwd: Path,
                who: str) -> str:
     """Run one `claude -p` turn and return its text output."""
     try:
         result = subprocess.run(command, input=request, text=True,
-                                capture_output=True, timeout=3600, cwd=cwd)
+                                capture_output=True, timeout=3600, cwd=cwd,
+                                env=agent_environment(cwd))
     except subprocess.TimeoutExpired:
         sys.exit(f"ERROR: the {who} did not finish within 60 minutes.")
     answer = result.stdout.strip()

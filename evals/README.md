@@ -100,7 +100,9 @@ the available sources. Scores per run:
 - **error catch**: physics errors and unverifiable citations judged
   inconsistent or cannot verify;
 - **false alarms**: correct hypotheses judged inconsistent;
-- **citation check**: unverifiable citations marked `code_verified: no`;
+- **citation check**: citations that do not check out get a
+  `code_verified` value the case accepts (`no` for a missing commit,
+  `partly` or `no` for real lines that say something else);
 - tokens and latency per run, and verdict counts per hypothesis kind.
 
 Variants: `--no-literature` (without the literature index) and

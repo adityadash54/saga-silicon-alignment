@@ -8,8 +8,10 @@ accepted code_verified values. Per run:
 - error_catch: fraction of physics-error and fabricated hypotheses judged
   "inconsistent" or "cannot verify" (None if the case has none).
 - false_alarm: number of correct hypotheses judged "inconsistent".
-- fabrication_caught: fraction of fabricated hypotheses with
-  code_verified "no" (None if none).
+- citation_check: fraction of hypotheses whose citation does not check
+  out (kind "fabricated": a missing commit, or real lines that say
+  something else) with a code_verified value the case accepts, usually
+  "no", or "partly" for real lines misread (None if none).
 - version_caveat: a version caveat was given where one is expected (None
   if none expected).
 - pass: json_ok, every hypothesis accepted on verdict and code_verified,
@@ -70,8 +72,7 @@ def grade(case: dict, block: dict | None) -> dict:
         "error_catch": mean([row["verdict"] in CAUGHT for row in error_rows]),
         "false_alarm": sum(row["verdict"] == "inconsistent"
                            for row in of_kind("correct")),
-        "fabrication_caught": mean([row["code_verified"] == "no"
-                                    for row in fabricated]),
+        "citation_check": mean([row["verified_ok"] for row in fabricated]),
         "version_caveat": version_caveat,
     }
     result["pass"] = (result["json_ok"]
