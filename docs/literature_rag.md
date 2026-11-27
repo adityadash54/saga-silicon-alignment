@@ -144,7 +144,17 @@ that support or contradict a hypothesis.
 `evals/retrieval/cases.json` in the three modes (bm25, dense, hybrid). A
 case passes at k if one of the top-k passages comes from an expected file
 and overlaps its page range. It reports recall@5, recall@10 and mean
-reciprocal rank over the top 10, and the first matching rank per case.
+reciprocal rank over the top 10 of the raw ranking, the first matching rank
+per case, and hit@6 (2/paper): whether the list the request gets (top 6, at
+most 2 passages per paper) contains an expected passage.
+
+A case can give a finding and an answer summary instead of a question; its
+query is then built by `literature_query`, so the eval covers the path of
+section 5 (A), including the replacement of detector names. Cases with
+`"expected": []` have no answer in the collection: they are left out of the
+scores, and their highest cosine similarity is set against the answerable
+cases' to show whether a "no relevant literature" cut-off could work.
+`tests/test_retrieval_eval.py` checks the runner with the fake embedder.
 
 The cases name the papers and pages, so `cases.json` is git-ignored and
 stays with each user; `cases.example.json` shows the format with made-up
