@@ -9,7 +9,7 @@ genuinely needed.
 |---|---|---|---|---|
 | `triage/` | Does the triage group flags correctly without inventing findings? | Synthetic comparisons with known injected changes, including no-change and distractor cases | Code, from `findings_*.json` against the injected truth | Cases and grading approved (`triage/PROPOSED_CASES.md`, harness `4d598628dc6c`); self-test passes; live run 21/21 pass, 7 key cases repeated with identical findings (2026-11-26) |
 | `coresoftware_expert/` | Does the expert find the commit behind a known effect? | Past coresoftware commits with a known residual effect, described as findings | Code: commit hit in top 1 / top 3; every cited hash checked with git | Planned |
-| `tracking_expert/` | Are its verdicts right, and does it catch wrong physics and citations that don't check out? | Coresoftware-expert answers whose hypotheses have known verdicts (`cases.json`, local only; `cases.example.json` shows the format) | Code, from the JSON verdict block: verdict per hypothesis, code-verified flag, version caveat | Harness built, self-test passes on the examples; cases being drafted |
+| `tracking_expert/` | Are its verdicts right, and does it catch wrong physics and citations that don't check out? | Coresoftware-expert answers whose hypotheses have known verdicts (`cases.json`, local only; `cases.example.json` shows the format) | Code, from the JSON verdict block: verdict per hypothesis, code-verified flag, version caveat | 6 cases (18 hypotheses) approved; pilot on 3 cases (2026-11-27): 2/3 pass, every verdict right, the fail caused by git being blocked in the agent (fixed, not yet re-run); see Pilot below |
 | `retrieval/` | Does the literature search find the right paper and page, also in the list the tracking expert's request gets? | Your questions, or findings searched as the agent does, with expected file and page range, plus no-answer questions (`retrieval/cases.json`, git-ignored because it names your papers; `cases.example.json` shows the format) | Code: recall@5, recall@10, MRR, hit@6 (2/paper) for bm25, dense, hybrid; highest cosine of no-answer against answerable cases | Run on 32 approved cases (2026-11-27): questions fine (hybrid hit@6 18/18), agent path weaker in hybrid than in BM25 alone (hit@6 4/8 against 7/8); see Results below |
 | `permissions/` | Do the read-only and no-network limits hold? | Prompts that try to edit files, run forbidden commands or reach the network | End state: checkout unchanged, nothing fetched | Planned |
 | `dialogue/` | How do the two experts converge? | Findings with known causes | Convergence rate, turns used, questions to the reviewer, status-format compliance | Planned |
@@ -107,8 +107,36 @@ the available sources. Scores per run:
 
 Variants: `--no-literature` (without the literature index) and
 `--effort medium|high`. A rerun skips (case, repetition) pairs already in
-`results.jsonl`. With about 14 cases × 2 repetitions only large
-differences between variants are meaningful.
+`results.jsonl`. With 6 cases × 2 repetitions only large differences
+between variants are meaningful.
+
+### Pilot (2026-11-27, `claude-opus-5-5`, effort high)
+
+6 cases with 18 hypotheses were approved by the reviewer; the pilot ran 3
+of them once (`--variant pilot`).
+
+- **2 of 3 pass.** All 9 verdicts were accepted: every wrong hypothesis
+  was judged inconsistent or cannot verify, no correct one was judged
+  inconsistent, and the verdict block was valid in every run.
+- **The failed run was a harness problem.** The Claude Code sandbox
+  (on in the user's settings, inherited by `claude -p`) blocks reading
+  the user's git config, so every git command inside the agent failed.
+  The agent said so and marked a real commit as only partly verified.
+  The run that passed with commit citations also had no git, so its
+  commit checks were not real. Fixed for both experts: `claude -p` now
+  runs git without the user's global config (`agent_environment` in
+  `stdiag/coresoftware_expert.py`); the sandbox stays on.
+- **Grader corrected:** the citation metric now counts a `code_verified`
+  value the case accepts, and is named `citation_check`.
+- **A case corrected:** the agent pointed out two physics flaws in one
+  case's finding; the finding was fixed, the expected verdicts did not
+  change.
+- **Size:** about 850k input tokens per run (541k to 1.32M, mostly cached
+  re-sends of the growing conversation), 14k output tokens, about 130 s
+  and 25 steps.
+- **Not yet run** (paused to save tokens): the two git-dependent cases
+  again, to confirm the git fix, then the full run (6 cases × 2,
+  roughly 10M input tokens, mostly cached).
 
 ## Retrieval eval
 
