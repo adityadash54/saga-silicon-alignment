@@ -23,6 +23,10 @@ tracking_docs/
 # Retrieval test cases name the papers and pages: local only
 # (evals/retrieval/cases.example.json shows the format)
 /evals/retrieval/cases.json
+# Tracking expert test cases and their proposal stay local: they are the
+# evaluation set (evals/tracking_expert/cases.example.json shows the format)
+/evals/tracking_expert/cases.json
+/evals/tracking_expert/PROPOSED_CASES.md
 
 # Local Claude Code settings (personal permissions)
 .claude/settings.local.json
