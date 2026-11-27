@@ -102,6 +102,25 @@ def test_claude_code_output_parsing(monkeypatch, synthetic_outputs, stdout,
     assert label == "claude-opus-5-5 via Claude Code CLI"
 
 
+def test_notable_unflagged_with_nothing_notable(monkeypatch,
+                                                synthetic_outputs):
+    """No notable rows (as in a no-change comparison) gives an empty list,
+    not an error (pandas >= 3 returns a DataFrame from an empty apply)."""
+    flags = __import__("pandas").read_csv(
+        synthetic_outputs / "flags_Iter0_vs_Iter1.csv",
+        dtype={"detector": str, "coord": str, "reason": str})
+    quiet = flags.loc[
+        flags["comparable"] & ~flags["flagged"]
+        & (flags["mu_z"] <= triage_agent.NOTABLE_MU_Z)
+        & (flags["sigma_rel_significance"]
+           <= triage_agent.NOTABLE_WIDTH_SIGNIFICANCE)
+        & (flags[["entries_1", "entries_2"]].min(axis=1)
+           >= triage_agent.NOTABLE_LOW_ENTRIES)]
+    monkeypatch.setattr(triage_agent.ComparisonData, "flags", quiet)
+    result = json.loads(triage_agent.list_notable_unflagged())
+    assert result["total_matching"] == 0 and result["rows"] == []
+
+
 @pytest.mark.parametrize("effort", ["xhigh", None])
 def test_claude_code_effort_flag(monkeypatch, synthetic_outputs, effort):
     class Result:

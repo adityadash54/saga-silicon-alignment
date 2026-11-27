@@ -354,8 +354,11 @@ def list_notable_unflagged(detector: str = "", limit: int = 200) -> str:
         f"low statistics (N < {NOTABLE_LOW_ENTRIES})": low_entries,
     })
     notable = notes.any(axis=1)
-    reasons = notes.loc[notable].apply(
-        lambda row: "; ".join(row.index[row]), axis=1)
+    # Built as a plain list: DataFrame.apply on an empty selection returns a
+    # DataFrame in pandas >= 3, which assign() cannot store as one column.
+    reasons = pd.Series(["; ".join(notes.columns[row]) for row in
+                         notes.loc[notable].to_numpy()],
+                        index=notes.index[notable], dtype=object)
     return frame_rows(frame.loc[notable].assign(reason=reasons), limit)
 
 
