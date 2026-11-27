@@ -10,7 +10,7 @@ genuinely needed.
 | `triage/` | Does the triage group flags correctly without inventing findings? | Synthetic comparisons with known injected changes, including no-change and distractor cases | Code, from `findings_*.json` against the injected truth | Cases and grading approved (`triage/PROPOSED_CASES.md`, harness `4d598628dc6c`); self-test passes; live run 21/21 pass, 7 key cases repeated with identical findings (2026-11-26) |
 | `coresoftware_expert/` | Does the expert find the commit behind a known effect? | Past coresoftware commits with a known residual effect, described as findings | Code: commit hit in top 1 / top 3; every cited hash checked with git | Planned |
 | `tracking_expert/` | Are its verdicts right? | Hypotheses with known verdicts (correct, sign-flipped residual, ACTS API absent in v45) | Code: verdict label | Planned |
-| `retrieval/` | Does the literature search find the right paper and page, also in the list the tracking expert's request gets? | Your questions, or findings searched as the agent does, with expected file and page range, plus no-answer questions (`retrieval/cases.json`, git-ignored because it names your papers; `cases.example.json` shows the format) | Code: recall@5, recall@10, MRR, hit@6 (2/paper) for bm25, dense, hybrid; highest cosine of no-answer against answerable cases | Runner built; not yet run |
+| `retrieval/` | Does the literature search find the right paper and page, also in the list the tracking expert's request gets? | Your questions, or findings searched as the agent does, with expected file and page range, plus no-answer questions (`retrieval/cases.json`, git-ignored because it names your papers; `cases.example.json` shows the format) | Code: recall@5, recall@10, MRR, hit@6 (2/paper) for bm25, dense, hybrid; highest cosine of no-answer against answerable cases | Run on 32 approved cases (2026-11-27): questions fine (hybrid hit@6 18/18), agent path weaker in hybrid than in BM25 alone (hit@6 4/8 against 7/8); see Results below |
 | `permissions/` | Do the read-only and web-domain limits hold? | Prompts that try to edit files, run forbidden commands or fetch disallowed sites | End state: checkout unchanged, nothing forbidden fetched | Planned |
 | `dialogue/` | How do the two experts converge? | Findings with known causes | Convergence rate, turns used, questions to the reviewer, status-format compliance | Planned |
 
@@ -96,3 +96,46 @@ the page tend to share its words and favour BM25. With n cases one miss moves
 recall by 1/n, so only large differences between modes or models are
 meaningful. Reports go to `evals/retrieval/runs/` (git-ignored); they quote
 paper names and stay local.
+
+### Results (2026-11-27, `granite-embedding:30m`)
+
+32 cases, all approved by the reviewer: 18 questions, 8 agent-path findings,
+6 no-answer questions. Scores over the answerable cases:
+
+| Cases | Mode | recall@5 | recall@10 | MRR@10 | hit@6 (2/paper) |
+|---|---|---|---|---|---|
+| Questions (18) | bm25 | 17/18 | 17/18 | 0.92 | 17/18 |
+| Questions (18) | dense | 14/18 | 15/18 | 0.69 | 15/18 |
+| Questions (18) | hybrid | 18/18 | 18/18 | 0.91 | 18/18 |
+| Agent path (8) | bm25 | 5/8 | 8/8 | 0.58 | 7/8 |
+| Agent path (8) | dense | 2/8 | 3/8 | 0.08 | 3/8 |
+| Agent path (8) | hybrid | 4/8 | 5/8 | 0.39 | 4/8 |
+| All answerable (26) | bm25 | 0.85 | 0.96 | 0.81 | 0.92 |
+| All answerable (26) | dense | 0.62 | 0.69 | 0.50 | 0.69 |
+| All answerable (26) | hybrid | 0.85 | 0.88 | 0.75 | 0.85 |
+
+- **Questions**: hybrid puts every expected page in the top 5 and in the
+  agent's capped list (18/18; 95% interval 81–100%). Dense alone is
+  weakest. The questions were drafted from the extracted text, which
+  favours BM25.
+- **Agent path** (what the tracking expert's request gets): still the weak
+  point. BM25 alone puts the expected page in the request list for 7 of 8
+  findings, hybrid for 4 of 8. The dense ranking finds 3 of 8, and fusion
+  pushes BM25's hits down (rank 5 and 6 to out of the top 10, rank 1 to 8).
+  BM25 was better on 3 findings and hybrid on none (exact McNemar p = 0.25
+  at n = 8), the same direction as in the draft run.
+- **Per-paper cap**: no expected page lost to the 2-per-paper cap any more.
+  The cap losses of the draft run came from page ranges that were too
+  narrow.
+- **No answer**: highest cosine 0.67–0.79, against 0.77–0.93 (median 0.82)
+  for the answerable cases. A cut-off at 0.785 would also drop 4 of the 26
+  answerable cases, so there is no reliable "nothing relevant" threshold.
+- **Draft run, before review** (same day): hybrid hit@6 16/18 questions and
+  2/8 findings. Correcting the page ranges and findings raised most scores;
+  the gap between BM25 and hybrid on the agent path remained.
+- **Open**: the agent-path gap lies in the dense half of the fusion, either
+  the long query (about 120 words mixing the finding, numbers and generic
+  terms) or the small embedding model. Candidates to test, cheapest first:
+  more BM25 weight in the fusion (or BM25 alone) for the request, a shorter
+  query, then Granite R2.
+- **Cost**: no Claude tokens; embeddings run locally.

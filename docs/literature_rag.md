@@ -158,10 +158,14 @@ cases' to show whether a "no relevant literature" cut-off could work.
 
 The cases name the papers and pages, so `cases.json` is git-ignored and
 stays with each user; `cases.example.json` shows the format with made-up
-examples. Status: the harness is built; the cases have not yet been checked
-by the reviewer, and the dense and hybrid modes have not been run, so there
-are no results yet. Questions written while reading a page tend to share its
-words and favour BM25, so phrase them the way you would ask. With n cases
+examples. Status: 32 cases, reviewed and approved by the reviewer on
+2026-11-27 (results in
+[`evals/README.md`](../evals/README.md#results-2026-11-27-granite-embedding30m)).
+Hand-written questions are found well (hybrid hit@6 18/18). The agent-path
+queries are found better by BM25 alone than by the hybrid search (hit@6 7/8
+against 4/8), and the highest cosine does not separate no-answer from
+answerable questions. Questions written while reading a page tend to share its words
+and favour BM25, so phrase them the way you would ask. With n cases
 one case moves recall by 1/n; with a few dozen cases only large differences
 between modes or models are meaningful.
 Agreed decision rule: move to Granite R2 (8,192-token context, from Hugging
@@ -182,7 +186,9 @@ search, and the tracking-expert request and allowlist.
 - 200-word chunks give precise page citations but can split an argument;
   the agent sees neighbouring text only by reading the page.
 - The embedding model is small (30M parameters) and was not trained on
-  detector-alignment text; how much it adds over BM25 is not yet measured.
+  detector-alignment text. In the first eval it rescued one hand-written
+  question that BM25 missed, but on the agent-path queries it lowered the
+  hybrid ranking below BM25 alone (section 7).
 - Retrieval can only be as relevant as the collection: effects that no
   paper in it discusses will return loosely related passages.
 
