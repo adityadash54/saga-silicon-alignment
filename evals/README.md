@@ -79,7 +79,7 @@ coresoftware checkout, with the ACTS / Millepede-II snapshot and the
 literature index) and ends its answer with a JSON verdict block, which is
 graded by code. Needs a complete `tracking_docs/` snapshot
 (`python -m stdiag.fetch_tracking_docs --check`). Every result row records
-the ACTS commit and the Millepede-II page checksum the agent read.
+the ACTS commit and the Millepede-II release and commit the agent read.
 
 The cases are the evaluation set and are not published: `cases.json`
 and `PROPOSED_CASES.md` are git-ignored, and this README reports only

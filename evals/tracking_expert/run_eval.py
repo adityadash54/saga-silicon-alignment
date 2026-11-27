@@ -88,11 +88,12 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def docs_versions() -> dict:
-    """ACTS commit and Millepede page checksum the agent read."""
+    """ACTS commit and Millepede-II release and commit the agent read."""
     sources = fetch_tracking_docs.read_sources(TRACKING_DOCS)
     return {"acts_commit": sources.get("acts", {}).get("commit"),
             "acts_version": sources.get("acts", {}).get("version_number"),
-            "millepede_sha256": sources.get("millepede", {}).get("sha256")}
+            "millepede_ref": sources.get("millepede", {}).get("ref"),
+            "millepede_commit": sources.get("millepede", {}).get("commit")}
 
 
 def run_one(case: dict, rep: int, variant_dir: Path, args) -> str:

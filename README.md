@@ -170,37 +170,43 @@ source .venv/bin/activate
 
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
-mkdir -p docs/Millepede   # then save the Millepede-II page there (below)
+git clone https://github.com/millepede-project/millepede-ii.git docs/Millepede/millepede-ii
 python -m stdiag.fetch_tracking_docs --update-acts
 cp maps/labels.example.csv labels.csv
 ```
-
-The tracking expert has no network access, so its ACTS and Millepede-II
-documentation is a local snapshot in `tracking_docs/`, built once and
-refreshed only when you ask. Save the Millepede-II manual page by hand
-first (it changes rarely), either with the browser (Save Page As, "Web
-Page, HTML Only") or with
-
-```bash
-curl -L --proto-redir =https --max-time 300 -A "Mozilla/5.0" \
-  -o docs/Millepede/draftman_page.html \
-  https://www.desy.de/~kleinwrt/MP2/doc/html/draftman_page.html
-```
-
-`--update-acts` downloads ACTS from the sPHENIX fork (pin a commit with
-`--acts-ref <full hash>`); without it the script only rebuilds the
-Millepede-II part from the saved page and keeps the ACTS copy.
-`python -m stdiag.fetch_tracking_docs --check` reports what the snapshot
-holds, offline.
 
 This creates a virtual environment in `.venv/` (git-ignored), activates it,
 and installs the package and pytest into it; it needs Python 3.10 or newer
 (`python3 --version`). Run `source .venv/bin/activate` again in every new
 terminal, and `deactivate` to leave it. Use `".[dev,api]"` to add the
-Anthropic API triage backend. The fetch line builds the ACTS 45.0.0 and
-Millepede-II snapshot in `tracking_docs/` for the tracking expert, and the
-last line creates a `labels.csv` to fill in with the configuration of each
-label.
+Anthropic API triage backend. The clone and fetch lines build the ACTS
+45.0.0 and Millepede-II V05-01-08 snapshot in `tracking_docs/` for the
+tracking expert (below), and the last line creates a `labels.csv` to fill
+in with the configuration of each label.
+
+The tracking expert has no network access, so its ACTS and Millepede-II
+sources are a local snapshot in `tracking_docs/`, built once and refreshed
+only when you ask:
+
+- **Millepede-II** is read from the local clone in `docs/Millepede/`
+  (git-ignored) at the release tag V05-01-08, with `git show`, so the
+  clone's checked-out commit and any local edits do not matter. The
+  snapshot holds the draft manual (`draftman_page.txt`, section labels as
+  `{#label}`), the other documentation pages and the `pede` source. The
+  GitHub repository mirrors DESY's; check the tag once against DESY GitLab,
+  the two hashes must be equal:
+
+  ```bash
+  git -C docs/Millepede/millepede-ii rev-parse V05-01-08
+  git ls-remote https://gitlab.desy.de/millepede/millepede-ii.git refs/tags/V05-01-08
+  ```
+
+- **ACTS** is downloaded from the sPHENIX fork only with `--update-acts`
+  (pin a commit with `--acts-ref <full hash>`); without it the script
+  rebuilds only the Millepede-II part and keeps the ACTS copy.
+
+`python -m stdiag.fetch_tracking_docs --check` reports what the snapshot
+holds, offline. Another Millepede-II release: `--millepede-ref <tag>`.
 
 The AI steps use the Claude Code CLI (`claude`, logged in). These locations
 can be set with environment variables:
@@ -209,7 +215,7 @@ can be set with environment variables:
 |---|---|---|
 | `STDIAG_CORESOFTWARE` | `../coresoftware` next to this repository | coresoftware and tracking experts |
 | `STDIAG_TRACKING_DOCS` | `tracking_docs/` in this repository (git-ignored) | tracking expert |
-| `STDIAG_MILLEPEDE_HTML` | `docs/Millepede/draftman_page.html` (git-ignored) | `fetch_tracking_docs`, which builds the Millepede-II part of the snapshot from it |
+| `STDIAG_MILLEPEDE_REPO` | `docs/Millepede/millepede-ii` (git-ignored) | `fetch_tracking_docs`, which builds the Millepede-II part of the snapshot from this clone |
 | `STDIAG_RUNS_DIR` | `runs/` in this repository (git-ignored) | `compare_runs`, which creates `<a>_vs_<b>/` folders there |
 
 `coresoftware` is not part of this repository; point the variable to the local coresoftware checkout of https://github.com/sPHENIX-Collaboration/coresoftware (full history needed for the experts).
@@ -813,12 +819,17 @@ regenerates everything from `make_synth.C`.
   the version sPHENIX builds against; `coresoftware` itself does not pin
   it. Upstream `main` is a newer API. The commit in the snapshot is in
   `tracking_docs/SOURCES.json`.
-- **Millepede-II manual V04-17-06**
-  (https://www.desy.de/~kleinwrt/MP2/doc/html/draftman_page.html), saved by
-  hand to `docs/Millepede/`; its checksum is in `tracking_docs/SOURCES.json`.
+- **Millepede-II V05-01-08**: official repository
+  (https://gitlab.desy.de/millepede/millepede-ii, mirrored at
+  https://github.com/millepede-project/millepede-ii; documentation at
+  https://millepede.pages.desy.de/millepede-ii/). Release, commit and
+  checksums are in `tracking_docs/SOURCES.json`. Since the draft manual
+  entered the repository (2025-11-18) only its notation and figure format
+  changed; it was not compared word by word with the earlier web editions
+  (e.g. V04-17-06).
 - Refresh ACTS with `python -m stdiag.fetch_tracking_docs --update-acts
-  [--acts-ref <branch, tag or full hash>]`; after saving a new copy of the
-  manual page, run it without options.
+  [--acts-ref <branch, tag or full hash>]`; another Millepede-II release
+  with `--millepede-ref <tag>`.
 - **Literature retrieval**: `granite-embedding:30m` (IBM, Apache 2.0) from
   Ollama's library, served by Ollama 0.40.18; `pdftotext` from poppler
   26.11.0 (both Homebrew). The model name, its digest and the chunker

@@ -19,8 +19,9 @@ tracking_docs/
 # Alignment literature (publisher PDFs; some have no .pdf extension) and its
 # search index (stdiag-literature index)
 /docs/TrackingLiterature/
-# Millepede-II manual page saved by hand (DESY's document; the tracking docs
-# snapshot is built from it, see stdiag/fetch_tracking_docs.py)
+# Local clone of the Millepede-II repository (DESY's code and documentation;
+# the tracking docs snapshot is built from it, see
+# stdiag/fetch_tracking_docs.py)
 /docs/Millepede/
 /literature_index/
 # Retrieval test cases name the papers and pages: local only

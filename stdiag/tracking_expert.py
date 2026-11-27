@@ -3,8 +3,9 @@
 
 Runs the Claude Code CLI (`claude -p`) inside the coresoftware checkout with
 read-only tools: Read, Grep, Glob, read-only git commands, read access to
-the tracking_docs/ snapshot (ACTS 45.0.0 from the sPHENIX fork, Millepede-II
-manual V04-17-06; see fetch_tracking_docs.py). It has no network access:
+the tracking_docs/ snapshot (ACTS 45.0.0 from the sPHENIX fork; Millepede-II
+V05-01-08 manual, option pages and pede source; see fetch_tracking_docs.py).
+It has no network access:
 WebFetch and WebSearch are not available, so what the local files lack is
 reported as "cannot verify". It also gets alignment-literature passages
 from the local hybrid index (literature.py): the best matches for the
@@ -64,8 +65,12 @@ and have no network access: use only the local sources below.
 Sources, in order of preference:
 1. The local snapshot in the tracking_docs directory (ACTS 45.0.0 from the \
 sPHENIX fork, the version sPHENIX builds against, with its docs, headers \
-and sources; Millepede-II manual V04-17-06 with anchors written as \
-{#anchor}). The docs map in the request says where each topic is.
+and sources; Millepede-II release V05-01-08: the draft manual with anchors \
+written as {#anchor}, the option and change pages, and the pede source \
+code). The docs map in the request says where each topic is. The manual \
+describes the method; where a claim is about what pede actually does \
+(entries cut, outlier treatment, constraints, solution), check the option \
+pages or the source, and say when they differ from the manual.
 2. sPHENIX code in the current directory (coresoftware) and its git history.
 3. Alignment literature (papers and talks on track-based alignment): \
 passages are under "Literature passages" in the request; \

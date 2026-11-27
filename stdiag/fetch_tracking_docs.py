@@ -12,26 +12,36 @@ in tracking_docs/ and refreshed one part at a time, only when asked:
                            headers and sources of the ActsPlugins and
                            ActsExamples parts that sPHENIX code includes
   acts/version_number      ACTS version of the snapshot
-  millepede/draftman_page.html, draftman_page.txt
-                           Millepede-II draft manual; the .txt keeps the
-                           page's anchors as {#anchor} markers for citing
-  SOURCES.json             where each part came from (ref, commit, file
-                           checksum, time)
+  millepede/draftman_page.txt
+                           Millepede-II draft manual (doc/draftManual.md)
+                           with its Doxygen section labels written as
+                           {#label} markers for citing
+  millepede/doc/*.md       the other Millepede-II documentation pages
+                           (steering options, major changes, exit codes,
+                           hard-coded limits, ...)
+  millepede/src/*.f90, *.c the pede source code
+  SOURCES.json             where each part came from (repository, ref,
+                           commit, checksums, time)
 
 ACTS comes from the sPHENIX fork (the version sPHENIX builds against), not
 upstream main. It is downloaded only with --update-acts, into a temporary
 folder that replaces the old copy only when the download succeeded.
 
-The Millepede-II manual is built from a copy of the page saved by hand
-(default docs/Millepede/draftman_page.html, STDIAG_MILLEPEDE_HTML), e.g.
-  curl -L --proto-redir =https --max-time 300 -A "Mozilla/5.0" \\
-    -o docs/Millepede/draftman_page.html <MILLEPEDE_URL>
-or the browser's "Save Page As, HTML only". Only text and anchors are
-kept; script and style content is dropped.
+Millepede-II comes from a local clone of the Millepede-II repository
+(default docs/Millepede/millepede-ii, STDIAG_MILLEPEDE_REPO), read at a
+release tag (default MILLEPEDE_REF) with `git show <ref>:<path>`, so the
+clone's checked-out commit and any local edits do not matter. No network
+access is needed. Get the clone once and check its tag against DESY:
+  git clone https://github.com/millepede-project/millepede-ii.git \\
+    docs/Millepede/millepede-ii
+  git -C docs/Millepede/millepede-ii rev-parse <tag>
+  git ls-remote https://gitlab.desy.de/millepede/millepede-ii.git \\
+    refs/tags/<tag>                       # must print the same hash
 
 Usage:
   python -m stdiag.fetch_tracking_docs --update-acts       # first time
   python -m stdiag.fetch_tracking_docs                     # Millepede only
+  python -m stdiag.fetch_tracking_docs --millepede-ref <tag>
   python -m stdiag.fetch_tracking_docs --update-acts --acts-ref <full hash>
   python -m stdiag.fetch_tracking_docs --check             # status, offline
 """
@@ -41,7 +51,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
-import html.parser
 import json
 import re
 import shutil
@@ -50,7 +59,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from stdiag.paths import MILLEPEDE_HTML, TRACKING_DOCS
+from stdiag.paths import MILLEPEDE_REPO, TRACKING_DOCS
 
 ACTS_REPO = "https://github.com/sPHENIX-Collaboration/acts.git"
 # Parts of ACTS kept; sPHENIX code includes Acts/*, ActsExamples/* and
@@ -58,45 +67,24 @@ ACTS_REPO = "https://github.com/sPHENIX-Collaboration/acts.git"
 ACTS_PATHS = ["docs", "Core", "Plugins/Root", "Plugins/Json",
               "Examples/Framework", "Examples/Detectors"]
 ACTS_SUFFIXES = {".md", ".dox", ".bib", ".hpp", ".ipp", ".h", ".cpp"}
-MILLEPEDE_URL = "https://www.desy.de/~kleinwrt/MP2/doc/html/draftman_page.html"
-# The docs map cites this anchor; a page without it is not the manual.
-MILLEPEDE_MARKER = "ssec-meapar"
-
-
-class TextWithAnchors(html.parser.HTMLParser):
-    """HTML to plain text, marking id/name anchors as {#anchor}."""
-
-    BREAK_TAGS = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4",
-                  "h5", "h6", "pre", "table"}
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.parts: list[str] = []
-        self.skip = 0
-
-    def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
-            self.skip += 1
-        anchor = dict(attrs).get("id") or dict(attrs).get("name")
-        if anchor:
-            self.parts.append(f" {{#{anchor}}} ")
-        if tag in self.BREAK_TAGS:
-            self.parts.append("\n")
-
-    def handle_endtag(self, tag):
-        if tag in ("script", "style") and self.skip:
-            self.skip -= 1
-        if tag in self.BREAK_TAGS:
-            self.parts.append("\n")
-
-    def handle_data(self, data):
-        if not self.skip:
-            self.parts.append(data)
-
-    def text(self) -> str:
-        lines = (" ".join(line.split()) for line in "".join(self.parts)
-                 .splitlines())
-        return "\n".join(line for line in lines if line) + "\n"
+# Millepede-II release read from the local clone. The draft manual text is
+# unchanged since it entered the repository (2025-11-18, first released in
+# V04-18-00) except for notation (MathJax macros, figure format).
+MILLEPEDE_REF = "V05-01-08"
+MILLEPEDE_OFFICIAL = "https://gitlab.desy.de/millepede/millepede-ii.git"
+MILLEPEDE_DOCS_URL = "https://millepede.pages.desy.de/millepede-ii/"
+MILLEPEDE_MANUAL = "doc/draftManual.md"
+# Files kept, by folder and suffix.
+MILLEPEDE_PARTS = {"doc": (".md",), "src": (".f90", ".c")}
+# Labels the docs map cites; the manual must define all of them.
+MILLEPEDE_CITED_LABELS = ["ssec-meapar", "ssec_large", "sssec-outlow",
+                          "ssec-lincon", "ssec-textfiles", "sssec-methods",
+                          "ssec-globalfit", "ssec-align"]
+HEADING_LEVELS = {"page": 1, "section": 2, "subsection": 3,
+                  "subsubsection": 4, "paragraph": 5}
+LABEL_LINE = re.compile(
+    r"^\s*\\(page|section|subsection|subsubsection|paragraph)\s+(\S+)\s*(.*)$")
+ANCHOR_LINE = re.compile(r"^\s*\\anchor\s+(\S+)\s*$")
 
 
 def now_utc() -> str:
@@ -106,10 +94,6 @@ def now_utc() -> str:
 def run(command: list[str], cwd: Path | None = None) -> str:
     return subprocess.run(command, cwd=cwd, check=True, capture_output=True,
                           text=True).stdout.strip()
-
-
-def sha256_of(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def clone_acts(ref: str, clone: Path) -> None:
@@ -180,31 +164,94 @@ def fetch_acts(ref: str, destination: Path) -> dict:
             "files": counts, "fetched_utc": now_utc()}
 
 
-def check_millepede_html(source: Path) -> str:
-    """The page's text, or exit with how to get it."""
-    if not source.is_file():
-        sys.exit(f"ERROR: no Millepede-II page at {source}. Save "
-                 f"{MILLEPEDE_URL} there (browser: Save Page As, HTML only; "
-                 "or curl, see --help), or pass --millepede-html.")
-    page = source.read_bytes().decode("utf-8", errors="replace")
-    if MILLEPEDE_MARKER not in page:
-        sys.exit(f"ERROR: {source} has no '{MILLEPEDE_MARKER}' anchor; it "
-                 "is not the Millepede-II draft manual page.")
-    return page
+def git_bytes(repo: Path, *args: str) -> bytes:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                          capture_output=True).stdout
 
 
-def build_millepede(source: Path, page: str, destination: Path) -> dict:
-    destination.mkdir(parents=True, exist_ok=True)
-    (destination / "draftman_page.html").write_text(page)
-    parser = TextWithAnchors()
-    parser.feed(page)
-    (destination / "draftman_page.txt").write_text(parser.text())
-    modified = dt.datetime.fromtimestamp(source.stat().st_mtime,
-                                         dt.timezone.utc)
-    return {"url": MILLEPEDE_URL, "local_file": source.name,
-            "sha256": sha256_of(source),
-            "file_modified_utc": modified.isoformat(timespec="seconds"),
-            "built_utc": now_utc()}
+def git_text(repo: Path, *args: str) -> str:
+    return git_bytes(repo, *args).decode("utf-8", errors="replace").strip()
+
+
+def manual_text(source: str) -> tuple[str, list[str]]:
+    """The manual with each Doxygen label as a heading ending in {#label}."""
+    lines, labels = [], []
+    for line in source.splitlines():
+        heading = LABEL_LINE.match(line)
+        anchor = ANCHOR_LINE.match(line)
+        if heading:
+            kind, label, title = heading.groups()
+            lines.append(f"{'#' * HEADING_LEVELS[kind]} {title} {{#{label}}}")
+            labels.append(label)
+        elif anchor:
+            lines.append(f"{{#{anchor.group(1)}}}")
+            labels.append(anchor.group(1))
+        else:
+            lines.append(line)
+    return "\n".join(lines) + "\n", labels
+
+
+def read_millepede(repo: Path, ref: str) -> tuple[dict[str, bytes], dict]:
+    """Files and provenance of Millepede-II at ref; nothing is written.
+
+    Files are read with `git show <commit>:<path>`, so neither the commit
+    the clone has checked out nor local edits change the result.
+    """
+    if not (repo / ".git").exists():
+        sys.exit(f"ERROR: no Millepede-II clone at {repo}; see --help for "
+                 "how to get it, or pass --millepede-repo.")
+    try:
+        commit = git_text(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+        tag_object = git_text(repo, "rev-parse", "--verify", ref)
+        date = git_text(repo, "log", "-1", "--format=%cI", commit)
+        names = git_text(repo, "ls-tree", "-r", "--name-only", commit, "--",
+                         *MILLEPEDE_PARTS).splitlines()
+        files = {name: git_bytes(repo, "show", f"{commit}:{name}")
+                 for name in names
+                 if "/" in name and name.endswith(
+                     MILLEPEDE_PARTS.get(name.split("/")[0], ()))}
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or b"").decode(errors="replace").strip()
+        sys.exit(f"ERROR: cannot read {ref} from {repo}: {detail}")
+    origin = subprocess.run(["git", "-C", str(repo), "remote", "get-url",
+                             "origin"], capture_output=True,
+                            text=True).stdout.strip()
+    if MILLEPEDE_MANUAL not in files:
+        sys.exit(f"ERROR: {MILLEPEDE_MANUAL} not found at {ref} in {repo}.")
+    _, labels = manual_text(files[MILLEPEDE_MANUAL].decode("utf-8", "replace"))
+    missing = [label for label in MILLEPEDE_CITED_LABELS if label not in labels]
+    if missing:
+        sys.exit(f"ERROR: the manual at {ref} lacks labels the docs map "
+                 f"cites: {', '.join(missing)}.")
+    digest = hashlib.sha256()
+    for name in sorted(files):
+        digest.update(name.encode() + b"\0" + files[name] + b"\0")
+    source = {
+        "repository": origin, "official_repository": MILLEPEDE_OFFICIAL,
+        "documentation": MILLEPEDE_DOCS_URL, "ref": ref, "commit": commit,
+        "tag_object": None if tag_object == commit else tag_object,
+        "commit_date": date,
+        "files": {part: sum(name.startswith(part + "/") for name in files)
+                  for part in MILLEPEDE_PARTS},
+        "manual_sha256": hashlib.sha256(files[MILLEPEDE_MANUAL]).hexdigest(),
+        "content_sha256": digest.hexdigest()}
+    return files, source
+
+
+def write_millepede(files: dict[str, bytes], destination: Path) -> None:
+    """Replace destination with the files plus the citable manual text."""
+    staging = destination.with_name(destination.name + ".new")
+    if staging.exists():
+        shutil.rmtree(staging)
+    for name, content in files.items():
+        target = staging / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    text, _ = manual_text(files[MILLEPEDE_MANUAL].decode("utf-8", "replace"))
+    (staging / "draftman_page.txt").write_text(text)
+    if destination.exists():
+        shutil.rmtree(destination)
+    staging.rename(destination)
 
 
 def read_sources(out: Path) -> dict:
@@ -224,10 +271,19 @@ def status(out: Path) -> list[str]:
         if empty:
             problems.append(f"ACTS parts without files: {', '.join(empty)}; "
                             "run with --update-acts")
-    if (not (out / "millepede" / "draftman_page.txt").exists()
-            or "millepede" not in sources):
-        problems.append("Millepede-II manual missing: save the page and run "
-                        "without options")
+    millepede = sources.get("millepede", {})
+    if not (out / "millepede" / "draftman_page.txt").exists() or not millepede:
+        problems.append("Millepede-II missing: run without options (reads "
+                        "the local clone)")
+    elif "commit" not in millepede:
+        problems.append("Millepede-II is in the old saved-page format: run "
+                        "without options to rebuild it from the clone")
+    else:
+        empty = [part for part in MILLEPEDE_PARTS
+                 if not any((out / "millepede" / part).glob("*"))]
+        if empty:
+            problems.append(f"Millepede-II parts without files: "
+                            f"{', '.join(empty)}; run without options")
     return problems
 
 
@@ -240,8 +296,10 @@ def main() -> None:
                         help="download ACTS (network: github.com)")
     parser.add_argument("--acts-ref", default="sPHENIX",
                         help="branch, tag or full commit hash of the fork")
-    parser.add_argument("--millepede-html", type=Path, default=MILLEPEDE_HTML,
-                        help="saved copy of the Millepede-II manual page")
+    parser.add_argument("--millepede-repo", type=Path, default=MILLEPEDE_REPO,
+                        help="local clone of the Millepede-II repository")
+    parser.add_argument("--millepede-ref", default=MILLEPEDE_REF,
+                        help=f"release tag or commit (default {MILLEPEDE_REF})")
     parser.add_argument("--check", action="store_true",
                         help="report the snapshot status; change nothing")
     args = parser.parse_args()
@@ -252,14 +310,14 @@ def main() -> None:
         print("\n".join(problems) or "snapshot complete")
         sys.exit(1 if problems else 0)
 
-    # Check the input before anything in the snapshot is replaced.
-    page = check_millepede_html(args.millepede_html)
+    # Read and check Millepede-II before anything in the snapshot changes.
+    files, millepede = read_millepede(args.millepede_repo, args.millepede_ref)
     args.out.mkdir(parents=True, exist_ok=True)
     sources = read_sources(args.out)
     if args.update_acts:
         sources["acts"] = fetch_acts(args.acts_ref, args.out / "acts")
-    sources["millepede"] = build_millepede(args.millepede_html, page,
-                                           args.out / "millepede")
+    write_millepede(files, args.out / "millepede")
+    sources["millepede"] = millepede | {"built_utc": now_utc()}
     sources.pop("fetched_utc", None)  # old single-fetch format
     (args.out / "SOURCES.json").write_text(json.dumps(sources, indent=2)
                                            + "\n")

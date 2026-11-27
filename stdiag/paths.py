@@ -5,9 +5,9 @@ STDIAG_CORESOFTWARE   coresoftware git checkout searched by the experts
 STDIAG_TRACKING_DOCS  ACTS / Millepede-II snapshot made by
                       `python -m stdiag.fetch_tracking_docs`
                       (default: tracking_docs/ in this repository, git-ignored)
-STDIAG_MILLEPEDE_HTML copy of the Millepede-II manual page saved by hand,
-                      from which fetch_tracking_docs builds the snapshot
-                      (default: docs/Millepede/draftman_page.html,
+STDIAG_MILLEPEDE_REPO local clone of the Millepede-II repository, from
+                      which fetch_tracking_docs builds the snapshot at a
+                      release tag (default: docs/Millepede/millepede-ii,
                       git-ignored)
 STDIAG_RUNS_DIR      where compare_runs creates one folder per comparison,
                       runs/<a>_vs_<b> (default: runs/ in this repository,
@@ -34,9 +34,9 @@ CORESOFTWARE = Path(os.environ.get(
     "STDIAG_CORESOFTWARE", REPO_ROOT.parent / "coresoftware")).resolve()
 TRACKING_DOCS = Path(os.environ.get(
     "STDIAG_TRACKING_DOCS", REPO_ROOT / "tracking_docs")).resolve()
-MILLEPEDE_HTML = Path(os.environ.get(
-    "STDIAG_MILLEPEDE_HTML",
-    REPO_ROOT / "docs" / "Millepede" / "draftman_page.html")).resolve()
+MILLEPEDE_REPO = Path(os.environ.get(
+    "STDIAG_MILLEPEDE_REPO",
+    REPO_ROOT / "docs" / "Millepede" / "millepede-ii")).resolve()
 RUNS_DIR = Path(os.environ.get("STDIAG_RUNS_DIR", REPO_ROOT / "runs")).resolve()
 LITERATURE_DIR = Path(os.environ.get(
     "STDIAG_LITERATURE_DIR", REPO_ROOT / "docs" / "TrackingLiterature")).resolve()

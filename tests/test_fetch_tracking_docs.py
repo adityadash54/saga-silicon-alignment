@@ -1,4 +1,5 @@
-"""Local tracking docs snapshot (no network: ACTS download is faked)."""
+"""Local tracking docs snapshot (no network: ACTS download is faked or
+local; Millepede-II is a small local git repository)."""
 
 from __future__ import annotations
 
@@ -13,17 +14,45 @@ import pytest
 from stdiag import fetch_tracking_docs as fetch
 from stdiag import coresoftware_expert, tracking_expert
 
-PAGE = ("<html><head><script>alert('x')</script><style>p{}</style></head>"
-        "<body><h2 id='ssec-meapar'>Measurements</h2><p>z = y - f(x)</p>"
-        "<a name='ssec-lincon'></a><p>Constraints</p></body></html>")
+MANUAL = "\n".join([
+    r"\page draftman_page Millepede II - Draft Manual",
+    r"\section sec_intro Introduction",
+    "Text before the labels.",
+    *[rf"\subsection {label} Title of {label}" + "\nBody of " + label
+      for label in fetch.MILLEPEDE_CITED_LABELS],
+    r"\anchor an-entries",
+    "Residual z = y - f(x).", ""])
+
+
+def git(repo, *args):
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+         "-c", "tag.gpgSign=false", "-c", "commit.gpgSign=false", *args],
+        cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
 
 @pytest.fixture
-def saved_page(tmp_path):
-    path = tmp_path / "saved" / "draftman_page.html"
-    path.parent.mkdir()
-    path.write_text(PAGE)
-    return path
+def mp_repo(tmp_path):
+    """A small Millepede-II-like repository with release tag V05-01-08,
+    a later commit and an uncommitted edit (neither may be read)."""
+    repo = tmp_path / "millepede-ii"
+    for name, text in {"doc/draftManual.md": MANUAL,
+                       "doc/options.md": " ## entries\nentries cut\n",
+                       "doc/fig1.tex": "not kept\n",
+                       "src/pede.f90": "program pede\nend program\n",
+                       "src/stat_compat.c": "int x;\n",
+                       "src/CMakeLists.txt": "not kept\n",
+                       "CMakeLists.txt": "not kept\n"}.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text)
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "release")
+    git(repo, "tag", "-a", "V05-01-08", "-m", "V05-01-08")
+    (repo / "doc" / "draftManual.md").write_text(MANUAL + "LATER COMMIT\n")
+    git(repo, "commit", "-q", "-am", "later")
+    (repo / "doc" / "options.md").write_text("UNCOMMITTED EDIT\n")
+    return repo
 
 
 @pytest.fixture
@@ -48,62 +77,103 @@ def run_main(monkeypatch, *args):
     fetch.main()
 
 
-def test_first_build_with_acts_and_local_page(tmp_path, saved_page,
-                                              fake_acts, monkeypatch):
+def build(monkeypatch, out, repo, *extra):
+    run_main(monkeypatch, "--out", str(out), "--millepede-repo", str(repo),
+             *extra)
+
+
+def test_manual_labels_become_anchors_on_the_same_lines():
+    text, labels = fetch.manual_text(MANUAL)
+    assert labels[:2] == ["draftman_page", "sec_intro"]
+    assert set(fetch.MILLEPEDE_CITED_LABELS) <= set(labels)
+    assert "an-entries" in labels
+    lines = text.splitlines()
+    assert len(lines) == len(MANUAL.splitlines())   # citations keep lines
+    assert lines[0] == "# Millepede II - Draft Manual {#draftman_page}"
+    assert "### Title of ssec-meapar {#ssec-meapar}" in lines
+    assert "{#an-entries}" in lines
+
+
+def test_first_build_reads_the_tag_only(tmp_path, mp_repo, fake_acts,
+                                        monkeypatch):
     out = tmp_path / "docs"
-    run_main(monkeypatch, "--out", str(out), "--update-acts",
-             "--millepede-html", str(saved_page))
-    text = (out / "millepede" / "draftman_page.txt").read_text()
-    assert "{#ssec-meapar}" in text and "{#ssec-lincon}" in text
-    assert "alert" not in text and "p{}" not in text
-    sources = json.loads((out / "SOURCES.json").read_text())
-    assert sources["acts"]["version_number"] == "45.0.0"
-    assert sources["millepede"]["local_file"] == "draftman_page.html"
-    assert len(sources["millepede"]["sha256"]) == 64
+    build(monkeypatch, out, mp_repo, "--update-acts")
+    mp = out / "millepede"
+    text = (mp / "draftman_page.txt").read_text()
+    assert "{#ssec-meapar}" in text and "LATER COMMIT" not in text
+    assert (mp / "doc" / "options.md").read_text() == " ## entries\nentries cut\n"
+    assert sorted(p.name for p in (mp / "src").iterdir()) == [
+        "pede.f90", "stat_compat.c"]
+    assert not (mp / "doc" / "fig1.tex").exists()
+    assert not (mp / "CMakeLists.txt").exists()
+    sources = json.loads((out / "SOURCES.json").read_text())["millepede"]
+    assert sources["ref"] == "V05-01-08"
+    assert sources["commit"] == git(mp_repo, "rev-parse", "V05-01-08^{commit}")
+    assert sources["tag_object"] == git(mp_repo, "rev-parse", "V05-01-08")
+    assert sources["files"] == {"doc": 2, "src": 2}
+    assert len(sources["content_sha256"]) == 64
     assert fetch.status(out) == []
 
 
-def test_rebuild_keeps_acts_without_download(tmp_path, saved_page,
-                                             fake_acts, monkeypatch):
+def test_rebuild_keeps_acts_and_other_ref(tmp_path, mp_repo, fake_acts,
+                                          monkeypatch):
     out = tmp_path / "docs"
-    run_main(monkeypatch, "--out", str(out), "--update-acts",
-             "--millepede-html", str(saved_page))
-    saved_page.write_text(PAGE.replace("Constraints", "Constraints v2"))
-    run_main(monkeypatch, "--out", str(out),
-             "--millepede-html", str(saved_page))
-    assert fake_acts == ["sPHENIX"]          # downloaded once only
+    build(monkeypatch, out, mp_repo, "--update-acts")
+    build(monkeypatch, out, mp_repo, "--millepede-ref", "HEAD")
+    assert fake_acts == ["sPHENIX"]          # ACTS downloaded once only
     assert (out / "acts" / "version_number").exists()
+    assert "LATER COMMIT" in (out / "millepede" / "draftman_page.txt").read_text()
     sources = json.loads((out / "SOURCES.json").read_text())
     assert sources["acts"]["commit"] == "a" * 40
-    assert "Constraints v2" in (out / "millepede" /
-                                "draftman_page.txt").read_text()
+    assert sources["millepede"]["tag_object"] is None
 
 
-@pytest.mark.parametrize("content", [None, "<html>some other page</html>"])
-def test_bad_page_leaves_snapshot_untouched(tmp_path, saved_page, fake_acts,
-                                            monkeypatch, content):
+@pytest.mark.parametrize("problem", ["no_clone", "no_tag", "missing_label"])
+def test_bad_millepede_input_leaves_snapshot_untouched(
+        tmp_path, mp_repo, fake_acts, monkeypatch, problem):
     out = tmp_path / "docs"
-    run_main(monkeypatch, "--out", str(out), "--update-acts",
-             "--millepede-html", str(saved_page))
+    build(monkeypatch, out, mp_repo, "--update-acts")
     before = (out / "SOURCES.json").read_text()
-    bad = tmp_path / "bad.html"
-    if content is not None:
-        bad.write_text(content)
-    with pytest.raises(SystemExit):
-        run_main(monkeypatch, "--out", str(out), "--update-acts",
-                 "--millepede-html", str(bad))
+    repo, ref = mp_repo, "V05-01-08"
+    if problem == "no_clone":
+        repo = tmp_path / "nowhere"
+    elif problem == "no_tag":
+        ref = "V99-99-99"
+    else:
+        (repo / "doc" / "draftManual.md").write_text(
+            MANUAL.replace(r"\subsection ssec-lincon", "ssec-lincon"))
+        git(repo, "commit", "-q", "-am", "drop a label")
+        ref = "HEAD"
+    with pytest.raises(SystemExit) as error:
+        build(monkeypatch, out, repo, "--update-acts", "--millepede-ref", ref)
+    assert {"no_clone": "no Millepede-II clone", "no_tag": "cannot read",
+            "missing_label": "ssec-lincon"}[problem] in str(error.value)
     assert (out / "SOURCES.json").read_text() == before
     assert fake_acts == ["sPHENIX"]          # nothing downloaded on failure
 
 
-def test_missing_acts_is_reported(tmp_path, saved_page, monkeypatch):
+def test_missing_acts_and_old_format_are_reported(tmp_path, mp_repo,
+                                                  monkeypatch):
     out = tmp_path / "docs"
     with pytest.raises(SystemExit, match="--update-acts"):
-        run_main(monkeypatch, "--out", str(out),
-                 "--millepede-html", str(saved_page))
+        build(monkeypatch, out, mp_repo)
     with pytest.raises(SystemExit) as check:
         run_main(monkeypatch, "--out", str(out), "--check")
     assert check.value.code == 1
+    sources = json.loads((out / "SOURCES.json").read_text())
+    sources["millepede"] = {"local_file": "draftman_page.html", "sha256": "x"}
+    (out / "SOURCES.json").write_text(json.dumps(sources))
+    assert any("old saved-page format" in problem
+               for problem in fetch.status(out))
+
+
+def test_docs_map_cites_exactly_the_checked_labels():
+    import re
+    from stdiag.paths import DOCS_MAP
+    millepede = DOCS_MAP.read_text().split("## ACTS")[0]
+    placeholders = {"anchor", "label"}     # used in the map's own prose
+    cited = set(re.findall(r"\{#([A-Za-z0-9_-]+)\}", millepede)) - placeholders
+    assert cited == set(fetch.MILLEPEDE_CITED_LABELS)
 
 
 def test_tracking_expert_has_no_network_tools():
@@ -197,11 +267,10 @@ def test_successful_download_replaces_and_counts(old_acts, monkeypatch):
     assert not (old_acts / "Core" / "notes.txt").exists()
 
 
-def test_check_reports_an_empty_acts_part(tmp_path, saved_page, fake_acts,
+def test_check_reports_an_empty_acts_part(tmp_path, mp_repo, fake_acts,
                                           monkeypatch):
     out = tmp_path / "docs"
-    run_main(monkeypatch, "--out", str(out), "--update-acts",
-             "--millepede-html", str(saved_page))
+    build(monkeypatch, out, mp_repo, "--update-acts")
     shutil.rmtree(out / "acts" / "Plugins" / "Json")
     assert fetch.status(out) == [
         "ACTS parts without files: Plugins/Json; run with --update-acts"]

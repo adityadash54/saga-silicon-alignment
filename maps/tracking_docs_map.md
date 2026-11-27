@@ -2,8 +2,8 @@
 
 All sources are local; there is no network access. The snapshot in
 `tracking_docs/` (made by `fetch_tracking_docs.py`) records in
-`tracking_docs/SOURCES.json` the ACTS commit and the checksum of the
-Millepede-II page it was built from. If something you need is not in the
+`tracking_docs/SOURCES.json` the ACTS commit and the Millepede-II release
+and commit it was built from. If something you need is not in the
 snapshot or the coresoftware checkout, say so and use "cannot verify".
 
 ## Versions
@@ -13,16 +13,23 @@ snapshot or the coresoftware checkout, say so and use "cannot verify".
   `tracking_docs/acts/version_number`). This is the fork sPHENIX builds
   against; `coresoftware` itself does not pin a version. Upstream `main` is
   a newer, different API, so do not rely on remembered upstream behaviour.
-- **Millepede-II V04-17-06**: draft manual by V. Blobel, Doxygen edition by
-  C. Kleinwort.
+- **Millepede-II V05-01-08** (release and commit in `SOURCES.json`): the
+  official repository (DESY GitLab, mirrored on GitHub) at that release.
+  The draft manual by V. Blobel (Doxygen edition by C. Kleinwort) entered
+  the repository on 2025-11-18; since then only its notation (MathJax
+  macros) and figure format have changed. It is the manual the earlier web
+  editions (e.g. V04-17-06) showed, but it was not compared word by word
+  with them.
 
-## Millepede-II (`tracking_docs/millepede/draftman_page.txt`, anchors as `{#anchor}`)
+## Millepede-II draft manual (`tracking_docs/millepede/draftman_page.txt`, anchors as `{#anchor}`)
 
-The URLs are for citing only; they cannot be fetched.
+Made from `doc/draftManual.md` with each Doxygen section label written as
+`{#label}` at the end of its heading; line numbers are those of
+`doc/draftManual.md`. The URLs are for citing only; they cannot be fetched.
 
 | Topic | Anchor | URL |
 |---|---|---|
-| Measurements, residual z = y − f(x), local/global derivatives, sigma; sign consistency | `{#ssec-meapar}` | https://www.desy.de/~kleinwrt/MP2/doc/html/draftman_page.html#ssec-meapar |
+| Measurements, residual z = y − f(x), local/global derivatives, sigma; sign consistency | `{#ssec-meapar}` | https://millepede.pages.desy.de/millepede-ii/draftman_page.html#ssec-meapar |
 | Large problems: global vs local parameters | `{#ssec_large}` | ...#ssec_large |
 | Outliers | `{#sssec-outlow}`, `outlierdownweighting`, `chisqcut`, `dwfractioncut` | ...#sssec-outlow |
 | Linear constraints, weak modes | `{#ssec-lincon}` | ...#ssec-lincon |
@@ -30,6 +37,26 @@ The URLs are for citing only; they cannot be fetched.
 | Solution methods (inversion, diagonalization, MINRES, ...) | `{#sssec-methods}` | ...#sssec-methods |
 | Global fit output and checks | `{#ssec-globalfit}` | ...#ssec-globalfit |
 | Track-based alignment | `{#ssec-align}` | ...#ssec-align |
+
+## Millepede-II documentation and `pede` source (`tracking_docs/millepede/doc/`, `src/`)
+
+The manual describes the method (written 2007); the option pages and the
+source show what the release actually does. Where they differ, the source
+decides; say so.
+
+| Topic | Where |
+|---|---|
+| Steering options (`entries`, `chisqcut`, `outlierdownweighting`, `dwfractioncut`, `method`, `constraint`, `regularisation`, ...) | `doc/options.md` (one `## <option>` heading each) |
+| What changed relative to the draft manual | `doc/majorChanges.md`, `doc/changeLog.md`, `doc/releases.md` |
+| Exit codes, hard-coded limits, troubleshooting | `doc/exitCodes.md`, `doc/hardcodedLimits.md`, `doc/troubleshooting.md` |
+| Worked example (steering, constraints, output) | `doc/example.md` |
+| `pede` main program: reading steering and binary files, entries cut (`mreqenf`), outlier treatment, `chisqcut`, constraints, solution | `src/pede.f90` (module data in `src/mpmod.f90`) |
+| Fortran Mille writer (record format) | `src/mille.f90` |
+| Numerics (inversion, diagonalization, constraint handling) | `src/mpnum.f90`, `src/mpqldec.f90`, `src/minres*.f90` |
+
+The C++ `Mille.cc` writer is not part of this repository, so sPHENIX's copy
+(`offline/packages/TrackerMillepedeAlignment/Mille.cc`) cannot be compared
+with an upstream version here.
 
 ## ACTS 45.0.0 (`tracking_docs/acts/`)
 
