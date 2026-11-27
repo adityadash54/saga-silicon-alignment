@@ -114,7 +114,8 @@ python3 -m stdiag.triage_agent "$OUT/flags_Iter0_vs_Iter1.csv" "$OUT/summary_Ite
 python3 -m stdiag.triage_agent "$OUT/flags_Iter0_vs_Iter1.csv" "$OUT/summary_Iter0_vs_Iter1.json" --backend claude-code
 ```
 
-The second command sends the synthetic summary to Anthropic (about $0.50).
+The second command sends the synthetic summary to Anthropic (about 50k
+tokens).
 A good answer has these properties:
 - `validation passed`;
 - chips 3 and 5 are single-chip shifts (B);

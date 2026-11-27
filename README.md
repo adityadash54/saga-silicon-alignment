@@ -104,6 +104,10 @@ Synthetic data with known, injected changes were used for evaluation. Details ar
   series with no changes, which produce zero detections.
 - **Agent infrastructure:** output validation and orchestration are covered
   by unit tests with scripted agent responses, run in CI.
+- **AI triage:** all 21 synthetic cases were grouped correctly in a live run
+  (one repetition each, `claude-opus-5-5`), so at 95% confidence the pass
+  rate is at least 84%. A second repetition of 7 key cases gave identical
+  findings.
 
 ## Architecture
 
@@ -297,8 +301,9 @@ nearly every entry is then flagged. Running this step again deletes `$RUN` and s
 triage and review files from the earlier run.
 
 **3. Triage (AI).** The first command is a preview of the prompt that would be sent. The second
-command costs about $0.50 on Claude Code login and sends the flag summary
-to Anthropic; adhere to collaboration policy while using real data.
+command uses about 50k tokens on Claude Code login (more for comparisons
+with many flags) and sends the flag summary to Anthropic; adhere to
+collaboration policy while using real data.
 `--backend api` uses an API key instead.
 
 ```bash
@@ -389,7 +394,7 @@ less $R/report_*.md
 python -m synthetic.stavechip_demo.check_demo $R/flags_*.csv
 # Preview what the AI triage would receive; nothing is sent
 python -m stdiag.triage_agent $R/flags_*.csv $R/summary_*.json --backend claude-code --dry-run | less
-# Run the AI triage (about $0.50; sends the synthetic summary to Anthropic)
+# Run the AI triage (about 50k tokens; sends the synthetic summary to Anthropic)
 python -m stdiag.triage_agent $R/flags_*.csv $R/summary_*.json --backend claude-code
 # List the findings
 python -m stdiag.review list $R/findings_*.json
@@ -413,8 +418,8 @@ What you should get:
   files.
 - **The triage dry run** prints what would be sent and ends with `Dry run
   only; nothing was sent.`
-- **The live triage** costs about $0.50 and sends this synthetic summary to
-  Anthropic. Its report header should say `validation passed`. It should
+- **The live triage** uses about 50k tokens and sends this synthetic summary
+  to Anthropic. Its report header should say `validation passed`. It should
   treat chips 3 and 5 and INTT sensor 2 as single-chip shifts, make the seven
   φ bins one vertex finding, and put chips 7 and 8 under statistics/coverage
   issues.
@@ -690,8 +695,9 @@ is run by hand. CI never calls an AI model and needs no credentials.
 
 The framework is evaluated in five parts. The steps without AI (including
 run-by-run stability) and the code around the agents are tested against
-known answers; the AI agents themselves
-have an eval in `evals/` that is built but not yet run. Details are in
+known answers. The triage agent's eval in `evals/` has been run: all 21
+cases passed, and the 7 cases run twice gave identical findings. Evals for
+the two experts are planned. Details are in
 [Validation status](#validation-status) and [`evals/README.md`](evals/README.md).
 
 | Part | Steps | Criteria | Results |
@@ -699,7 +705,7 @@ have an eval in `evals/` that is built but not yet run. Details are in
 | **Steps without AI** (fits, comparison) | Synthetic data with known injected changes → fit macro → `compare_runs` → `check_against_truth` / `check_demo` | Every row's status (flagged, unchanged, not comparable) matches the injected truth; statistically limited rows may go either way | Fit tables: 1312/1312 rows, 2 comparisons, 20 seeds. From ROOT files: 1550/1550 rows, reference seed and seeds 1–8. Stave/chip demo: current fit passes; the old settings fail in the 4 expected entries |
 | **Run-by-run stability** (no AI) | 60-run synthetic series of fit tables (`make_synthetic_run_series`) with 15 injected effects: chip, sensor, stave, half-layer and whole-layer steps, a transient, a drift, a one-run outlier, a bad run, a width change, and decoys that must not be reported (3 µm step, sub-threshold drift, 5%-luminosity runs, a missing ladder) → `run_stability` → `check_run_stability` | Every injection found with its expected class within ±2 runs (±6 for drift start and end); decoys give nothing; at most 2 unexplained change points per scan; a series with no changes (`--null`) gives none | 15 seeds × (injected + null): 30/30 pass. Null series: 0 change points in all 15; before the final criteria the methods fire 1.3 (BOCPD), 1.2 (PELT) and 0.9 (CUSUM) times per scan (target about 1). Injected series: 1 unexplained change point in total (seed 3: a half-layer step labelled a drift starting 3 runs early) |
 | **Code around the agents** | `pytest` with scripted agent replies (no AI) | Triage output validation (missing or invented entries, invalid groups, no JSON), no truth in the triage prompt, dialogue routing (convergence, turn limits, questions to the reviewer, missing status blocks), run folders | All 94 pytest tests pass, 25 of them on the triage output and the review and dialogue logic and 28 on the literature index (with a fake embedder); they also run in CI |
-| **AI triage** (`evals/triage/`) | 21 synthetic cases × 2 repetitions: no change, stave-wide, single chip or sensor, width, mean and width, missing ladder, sub-threshold and low-statistics decoys, two mixed. Each runs the real comparison and the real triage; the runner refuses to start until the reviewer approves a checksum of the harness | Graded by code from `findings_*.json`. A run passes if validation passed, every injected change that produces flags is matched by one finding (≥80% overlap both ways) in the expected group, and there are no invented or merged findings. Recall, group accuracy, cost and time are also recorded | Grader self-test passes on all 21 cases: a perfect answer passes everywhere, and empty or lumped-together answers fail where they should. The benchmark has not been run yet, so there is no pass rate. Two earlier live runs on the synthetic Iter1/Iter2 comparisons grouped every injected change correctly; that is too few to quote an accuracy, and 42 runs will still carry about ±15 percentage points |
+| **AI triage** (`evals/triage/`) | 21 synthetic cases, run once each, 7 of them twice: no change, stave-wide, single chip or sensor, width, mean and width, missing ladder, sub-threshold and low-statistics decoys, two mixed. Each runs the real comparison and the real triage; the runner refuses to start until the reviewer approves a checksum of the harness | Graded by code from `findings_*.json`. A run passes if validation passed, every injected change that produces flags is matched by one finding (≥80% overlap both ways) in the expected group, and there are no invented or merged findings. Recall, group accuracy, tokens and time are also recorded | Grader self-test passes on all 21 cases. Live run (`claude-opus-5-5`, harness `4d598628dc6c`, 2026-11-26): **21/21 pass**, recall and group accuracy 1.0, no false or merged findings; 95% interval for the pass rate 84–100%. A second repetition of 7 key cases (both mixed, two adjacent chips, half layer, opposite staves, a no-change and a sub-threshold decoy) passed again with identical findings (same groups and rows). About 47k tokens and 53 s per case on average |
 | **Literature retrieval** (`evals/retrieval/`, no AI apart from the local embedding model) | Your own questions with an expected paper and page range (`cases.json`, local only; `cases.example.json` shows the format) → `stdiag-literature` search in bm25, dense and hybrid mode | A case passes at k if a top-k passage comes from an expected paper and overlaps its pages; recall@5, recall@10, MRR@10 | Runner built. The cases are drafts written by Claude from the extracted text and not yet checked by the reviewer; dense and hybrid have not been run, so there are no results yet |
 
 Evals for the coresoftware expert (finds the causing commit), the tracking
@@ -860,10 +866,18 @@ Tested:
   A few rows are accepted either way because they are statistically limited
   or are stave rows with only some chips changed (see
   `synthetic/check_against_truth.py`).
-- **Blind AI triage** (live, Claude Code backend, earlier prompt version):
-  found every flagged injection with no false findings
-  (`synthetic/example_reports/`); it could not see the sub-threshold and
-  low-statistics chips, which the current prompt now includes.
+- **AI triage eval** (live, Claude Code backend, `claude-opus-5-5`, current
+  prompt with the entries and width rules; `evals/triage/`): all 21 synthetic
+  cases passed, so the pass rate is at least 84% at 95% confidence.
+  - Ambiguous cases were grouped as intended: two adjacent chips as one
+    single-chip finding (B), a half layer as one stave-wide finding (A) of 90
+    rows, two opposite stave shifts as two separate findings.
+  - Entries-noise rows, the sub-threshold shift and low-statistics rows went
+    to group E as notes, never as misalignment findings.
+  - A second repetition of 7 key cases passed again with identical findings
+    (same groups and rows). About 47k tokens and 53 s per case on average.
+  - An earlier blind run with an older prompt version is kept in
+    `synthetic/example_reports/`.
 - **Review and dialogue logic**: pytest with scripted agent replies
   (convergence, turn limit and continuation, questions for the reviewer,
   missing status blocks, file naming).
@@ -918,8 +932,9 @@ Tested:
 
 Not yet run live: the vertex page and VERTEX rows on real `track_ntp`,
 `macros/plot_fits_overlaid_stavechip.C` on real `ntp` files, the INTT z box
-fit and `out_of_range` on real `ntp` files, the
-current triage prompt, both experts and their dialogue (including whether
+fit and `out_of_range` on real `ntp` files, the triage on real productions
+(it is tested on synthetic comparisons only), both experts and their
+dialogue (including whether
 the read-only and web-domain limits hold in practice), the API backend, and
 `run_stability` on any real run series.
 

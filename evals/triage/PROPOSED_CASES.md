@@ -1,4 +1,4 @@
-# Triage eval: proposed cases (awaiting sign-off)
+# Triage eval: cases (approved 2026-11-26, harness `4d598628dc6c`)
 
 Each case is a synthetic comparison (reference vs comparison, full MVTX/INTT
 geometry, 1312 rows per label) built with the generator in `synthetic/`,
@@ -60,6 +60,6 @@ finding they make it a false finding.
 - **merged**: findings that hold most of two different injections.
 - **validation**: the triage output check passed.
 
-Recorded per run, not scored: wall-clock time, cost and tokens (requires one
+Recorded per run, not scored: wall-clock time and tokens (requires one
 small change: the triage's `claude -p` call reports its usage in JSON), and
 whether the run hit an error or timeout.
