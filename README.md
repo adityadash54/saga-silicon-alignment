@@ -51,7 +51,9 @@ test the reviewer can run to confirm it.
 - **Drift detection.** Relative to a reference production, a sensor is
   flagged when its mean shifts by more than 1.96 standard errors *and* by
   more than a physically meaningful minimum (MVTX 5 µm; INTT 20 µm in r-φ and
-  1 mm in z; vertex 10/20 µm), or when its width changes by more than 20%.
+  1 mm in z; vertex 10/20 µm), or when its width changes by more than 10%
+  with a significance above 3 (exact tests in
+  [Fits and flagging criteria](#fits-and-flagging-criteria)).
   Widths and means can be compared between runs, productions and alignment
   iterations, or between data and simulation. A shift in the mean reveals a
   sensor displacement, and a change in width reveals a change in resolution.
@@ -728,11 +730,14 @@ is run by hand. CI never calls an AI model and needs no credentials.
 
 ## Evaluation layer
 
-The framework is evaluated in five parts. The steps without AI (including
+The framework is evaluated in six parts. The steps without AI (including
 run-by-run stability) and the code around the agents are tested against
 known answers. The triage agent's eval in `evals/` has been run: all 21
-cases passed, and the 7 cases run twice gave identical findings. Evals for
-the two experts are planned. Details are in
+cases passed, and the 7 cases run twice gave identical findings. The
+tracking expert's eval has had a pilot on 3 of its 6 approved cases: 2
+passed, every verdict was right, and the failure came from git being
+blocked inside the agent (fixed, not yet re-run). The coresoftware
+expert's eval is planned. Details are in
 [Validation status](#validation-status) and [`evals/README.md`](evals/README.md).
 
 | Part | Steps | Criteria | Results |
@@ -742,10 +747,11 @@ the two experts are planned. Details are in
 | **Code around the agents** | `pytest` with scripted agent replies (no AI) | Triage output validation (missing or invented entries, invalid groups, no JSON), no truth in the triage prompt, dialogue routing (convergence, turn limits, questions to the reviewer, missing status blocks), run folders | All 94 pytest tests pass, 25 of them on the triage output and the review and dialogue logic and 28 on the literature index (with a fake embedder); they also run in CI |
 | **AI triage** (`evals/triage/`) | 21 synthetic cases, run once each, 7 of them twice: no change, stave-wide, single chip or sensor, width, mean and width, missing ladder, sub-threshold and low-statistics decoys, two mixed. Each runs the real comparison and the real triage; the runner refuses to start until the reviewer approves a checksum of the harness | Graded by code from `findings_*.json`. A run passes if validation passed, every injected change that produces flags is matched by one finding (≥80% overlap both ways) in the expected group, and there are no invented or merged findings. Recall, group accuracy, tokens and time are also recorded | Grader self-test passes on all 21 cases. Live run (`claude-opus-5-5`, harness `4d598628dc6c`, 2026-11-26): **21/21 pass**, recall and group accuracy 1.0, no false or merged findings; 95% interval for the pass rate 84–100%. A second repetition of 7 key cases (both mixed, two adjacent chips, half layer, opposite staves, a no-change and a sub-threshold decoy) passed again with identical findings (same groups and rows). About 47k tokens and 53 s per case on average |
 | **Literature retrieval** (`evals/retrieval/`, no AI apart from the local embedding model) | Your own questions, or findings searched as the tracking expert's request does, with an expected paper and page range, plus no-answer questions (`cases.json`, local only; `cases.example.json` shows the format) → `stdiag-literature` search in bm25, dense and hybrid mode | A case passes at k if a top-k passage comes from an expected paper and overlaps its pages; recall@5, recall@10, MRR@10 of the raw ranking and hit@6 (2/paper) of the list the request gets; highest cosine of no-answer against answerable cases | Run on 32 cases approved by the reviewer (18 questions, 8 agent-path, 6 no-answer; `granite-embedding:30m`, 2026-11-27). **Questions:** hybrid puts the expected page in the top 5 and in the agent's capped list for 18/18 (BM25 17/18, dense 14/18). **Agent path** (the tracking expert's default request), hit@6 (2/paper): BM25 7/8, hybrid 4/8, dense 3/8; fusion with the dense ranking pushes BM25's hits down (not significant at n = 8, same direction as the draft run). **No answer:** highest cosine 0.67–0.79 against 0.77–0.93 for answerable cases, so no reliable "nothing relevant" cut-off. Details in `evals/README.md` |
+| **Tracking expert** (`evals/tracking_expert/`) | Coresoftware-expert answers whose hypotheses have known verdicts (6 cases, 18 hypotheses, approved by the reviewer; `cases.json`, local only; `cases.example.json` shows the format) → tracking expert | Graded by code from the JSON verdict block: verdict per hypothesis, code-verified flag, version caveat | Pilot (`claude-opus-5-5`, effort high, 2026-11-27) on 3 cases, once each: 2/3 pass, all 9 verdicts accepted (no wrong hypothesis accepted, no correct one rejected). The failure was a harness problem: the sandbox blocked git inside the agent, so a real commit could only be marked partly verified (fixed for both experts, not yet re-run). About 850k input tokens per run (mostly cached), 14k output tokens, about 130 s. Details in `evals/README.md` |
 
-Evals for the coresoftware expert (finds the causing commit), the tracking
-expert (verdicts), the permission limits and the expert dialogue are planned
-but not built.
+Evals for the coresoftware expert (finds the causing commit), the permission
+limits and the expert dialogue are planned but not built. The tracking
+expert's full run (6 cases × 2) is pending.
 
 ## Try the whole pipeline on synthetic data
 
@@ -974,9 +980,10 @@ Tested:
 Not yet run live: the vertex page and VERTEX rows on real `track_ntp`,
 `macros/plot_fits_overlaid_stavechip.C` on real `ntp` files, the INTT z box
 fit and `out_of_range` on real `ntp` files, the triage on real productions
-(it is tested on synthetic comparisons only), both experts and their
-dialogue (including whether
-the read-only and no-network limits hold in practice), the API backend, and
+(it is tested on synthetic comparisons only), the coresoftware expert and
+the expert dialogue (the tracking expert has only the 3-case pilot on
+synthetic findings), whether the read-only and no-network limits hold in
+practice, the API backend, and
 `run_stability` on any real run series.
 
 ## Notes on interpretation
