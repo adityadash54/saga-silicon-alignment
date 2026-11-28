@@ -192,7 +192,10 @@ terminal, and `deactivate` to leave it. Use `".[dev,api]"` to add the
 Anthropic API triage backend. The clone and fetch lines build the ACTS
 45.0.0 and Millepede-II V05-01-08 snapshot in `tracking_docs/` for the
 tracking expert (below), and the last line creates a `labels.csv` to fill
-in with the configuration of each label.
+in with the configuration of each label: `coresoftware_commit` (the
+version the label's ntuples were built from), `cdb_tag`, `alignment_file`,
+`macro_version`, `local_diff` (optional: path, relative to `labels.csv`, to
+a `git diff` of local edits the build had beyond its commit) and `notes`.
 
 The tracking expert has no network access, so its ACTS and Millepede-II
 sources are a local snapshot in `tracking_docs/`, built once and refreshed
@@ -227,6 +230,7 @@ can be set with environment variables:
 | `STDIAG_TRACKING_DOCS` | `tracking_docs/` in this repository (git-ignored) | tracking expert |
 | `STDIAG_MILLEPEDE_REPO` | `docs/Millepede/millepede-ii` (git-ignored) | `fetch_tracking_docs`, which builds the Millepede-II part of the snapshot from this clone |
 | `STDIAG_RUNS_DIR` | `runs/` in this repository (git-ignored) | `compare_runs`, which creates `<a>_vs_<b>/` folders there |
+| `STDIAG_CLONES_DIR` | `runs/_clones/` in this repository (git-ignored) | `review.py ask` and the coresoftware expert eval: one range clone per pair of versions (about 40 MB each, a few seconds to make) |
 
 `coresoftware` is not part of this repository; point the variable to the local coresoftware checkout of https://github.com/sPHENIX-Collaboration/coresoftware (full history needed for the experts).
 
@@ -396,10 +400,28 @@ python -m stdiag.review decide $RUN/findings_*.json F1 accept --note "confirmed 
   so use the note to say how you confirmed the cause, for example by
   rerunning with the suspect commit reverted.
 
-`ask` takes the commit range from `--from REV --to REV`, otherwise from the
-`coresoftware_commit` of both labels in `labels.csv`, otherwise from
-`--since YYYY-MM-DD`. Until the experts' read-only limits have been tested,
-point `STDIAG_CORESOFTWARE` at a throwaway clone of coresoftware. Use
+`ask` takes the two coresoftware versions the inputs were built from:
+`--from REV` (reference) `--to REV` (comparison), otherwise the
+`coresoftware_commit` of both labels in `labels.csv`. With two versions
+the experts run in a range clone of your checkout
+(`stdiag/range_clone.py`), not in the checkout itself:
+
+- its files are the comparison version, the code that made those ntuples;
+- it holds only the commits that are in one build but not the other, each
+  marked reference only or comparison only, so builds on different branches
+  work; history both builds share is cut off, since it cannot explain a
+  difference;
+- it also holds your checkout's later commits (HEAD) that are in neither
+  build, listed as evidence of a later fix or revert but never as a cause
+  (`--no-later` leaves them out; `git fetch` and update your checkout first
+  to include recent upstream fixes, as the experts have no network);
+- a label's `local_diff` is sent as that build's local changes.
+
+As a fallback without versions, `--since YYYY-MM-DD` searches a date window
+in the full checkout, including its uncommitted changes. `check` runs in
+the clone the answer was written in. Until the experts' read-only limits
+have been tested, point `STDIAG_CORESOFTWARE` at a throwaway clone of
+coresoftware. Use
 `python -m stdiag.review continue $RUN/findings_*.json F1 --note "..."` to
 resume a paused dialogue.
 
@@ -597,7 +619,7 @@ outside an explicit list refused (`--permission-mode dontAsk`).
 | Agent | Works in | Tools | Reads | Produces |
 |---|---|---|---|---|
 | Triage | empty temporary folder | none | the comparison data it is given (flagged rows, stave overviews of flagged layers, not-comparable and notable-unflagged entries) | grouped findings with priorities |
-| Coresoftware expert | `coresoftware/` | Read, Grep, Glob, read-only git (`log`, `show`, `diff`, `blame`, `status`, ...; no `git grep`, whose `-O` runs a program; `--output` and branch changes blocked) | code, history and uncommitted changes in tier 1 (`TrackerMillepedeAlignment/`) and tier 2 (what `MakeMilleFiles.cc` depends on), with the commits of each tier listed in the request; `labels.csv`, code map | ranked hypotheses: tier, commit, file:line, mechanism, test, confidence; or "the reason could not be found from the changes in `TrackerMillepedeAlignment/` or the files it depends on" |
+| Coresoftware expert | range clone of `coresoftware/` (two versions; the checkout itself for `--since`) | Read, Grep, Glob, read-only git (`log`, `show`, `diff`, `blame`, `status`, ...; no `git grep`, whose `-O` runs a program; `--output` and branch changes blocked) | code of the comparison version and the commits in one build but not the other, in tier 1 (`TrackerMillepedeAlignment/`) and tier 2 (what `MakeMilleFiles.cc` depends on), listed per tier and side in the request; later commits as evidence; local diffs and `labels.csv`, code map | ranked hypotheses: tier, commit, side, file:line, mechanism, test, confidence; later fixes or reverts; or "the reason could not be found from the changes in `TrackerMillepedeAlignment/` or the files it depends on" |
 | Tracking expert | `coresoftware/` + `tracking_docs/` + `docs/TrackingLiterature/` | as above + `stdiag-literature search`; no network access (no web fetch or search) | ACTS 45.0.0 docs, headers and sources (local snapshot), Millepede-II manual, sPHENIX code, alignment literature (best passages for the finding in its request; more by searching) | per-hypothesis verdict (consistent / partly / inconsistent / cannot verify) with documentation, code and literature citations |
 
 "Notable unflagged" entries (z > 5 but below the minimum shift, width

@@ -11,35 +11,48 @@ The search is limited to the code that produces the ntp residuals: tier 1
 is offline/packages/TrackerMillepedeAlignment/ (MakeMilleFiles.cc writes
 the ntp), tier 2 the code MakeMilleFiles depends on (its includes and the
 modules that fill the nodes it reads); see TRACE_SCOPE. Before Claude is
-called, traced_commits() lists the commits of each tier in the revision
-range (or date window) with git log, and the list goes into the request.
+called, traced_commits() lists the commits of each tier that differ
+between the two builds with git log, and the list goes into the request.
 The agent starts in MakeMilleFiles.cc with tier 1, traces back into tier 2
 only where the finding points, and cites no commit outside the two tiers.
 It returns ranked, evidence-backed hypotheses, or says that the reason
 could not be found from those changes (NOT_FOUND).
 
+With explicit versions (--from/--to, the normal case) the agent runs in a
+range clone (stdiag/range_clone.py): checked out at the comparison version,
+holding only the commits in one build but not the other (from...to, both
+sides, so builds on different branches work), and by default the later
+commits of the checkout's HEAD as evidence of fixes or reverts. Commits
+both builds contain are not in it. Local edits a build had beyond its
+commit can be given as a diff per label (labels.csv column local_diff).
+With a date window (--since, fallback) it runs in the full checkout as
+before and also checks uncommitted changes there.
+
 Sent to Anthropic: the finding (detector/layer/stave/chip, fitted numbers),
-the label information from labels.csv, the code map, and the coresoftware
-code and git history the agent reads. coresoftware is public on GitHub;
-findings from real data may still fall under collaboration policy.
+the label information from labels.csv (and local diffs, in-scope parts),
+the code map, and the coresoftware code and git history the agent reads.
+coresoftware is public on GitHub; findings from real data may still fall
+under collaboration policy.
 
 Normally called through review.py; standalone use:
-  python -m stdiag.coresoftware_expert finding.json --since 2026-06-01 [--dry-run]
   python -m stdiag.coresoftware_expert finding.json --from <rev> --to <rev>
+  python -m stdiag.coresoftware_expert finding.json --since 2026-06-01 [--dry-run]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from stdiag import paths
 from stdiag.paths import CODE_MAP, CORESOFTWARE
+from stdiag.range_clone import (EXCLUDE_SHARED, SHARED_GLOB, RangeCloneError,
+                                git_environment, range_clone)
 
 DEFAULT_REPO = CORESOFTWARE
 DEFAULT_MODEL = "claude-opus-5-5"
@@ -98,6 +111,9 @@ NOT_FOUND = ("The reason could not be found from the changes in "
              "offline/packages/TrackerMillepedeAlignment/ or the files it "
              "depends on.")
 MAX_LISTED_COMMITS = 150
+MAX_LATER_COMMITS = 60
+MAX_LOCAL_DIFF_CHARS = 20000
+LOCAL_DIFF_KEY = "local_diff_text"
 
 ALLOWED_TOOLS = [
     "Read", "Grep", "Glob",
@@ -144,10 +160,11 @@ available: use Grep on the working tree, git show <rev>:<path> or git log \
 -S/-G for other revisions). Never try to modify anything.
 
 You receive one finding from a comparison of MVTX/INTT local residual \
-distributions between a reference input and a comparison input, the \
-revision range or date window, any known configuration of the two inputs, \
-a code map of where residuals come from, and the commits in the range that \
-touch the code in scope, listed by tier.
+distributions between a reference input and a comparison input, the two \
+coresoftware versions they were built from (or, as a fallback, a date \
+window), any known configuration of the two inputs, a code map of where \
+residuals come from, and the commits that touch the code in scope, listed \
+by tier.
 
 Scope (strict): the residuals in the ntp tree are written by \
 offline/packages/TrackerMillepedeAlignment/MakeMilleFiles.cc. Only two \
@@ -158,13 +175,36 @@ modules that fill the nodes it reads (alignment states and fit, \
 measurements and errors, geometry and alignment transforms, MVTX/INTT \
 clusters, tracks, vertices, DCA). The request lists these paths and why.
 Candidate commits are only those in the tier 1 and tier 2 lists of the \
-request (or, for a list cut short, other commits in the range touching the \
-same paths). Do not search the rest of the repository and do not cite \
-commits outside these paths.
+request (or, for a list cut short, other commits between the two versions \
+touching the same paths). Do not search the rest of the repository and do \
+not cite commits outside these paths.
+
+Two versions (the normal case): the current directory is a clone made for \
+this comparison. Its work tree is the comparison version; the refs \
+`reference` and `comparison` point to the two versions. It holds only the \
+commits that are in one build but not the other (git log \
+reference...comparison); history both builds share is cut off (shallow), \
+because a commit both builds contain cannot explain a difference between \
+them. The cut commits keep refs under refs/shared/ and are in both builds \
+too. List the commits between the builds with \
+git log reference...comparison --not --glob=refs/shared/* -- <paths> \
+(without the --not part the cut commits show up as if they were new). \
+Lines that git blame marks ^<hash> are older than the cut: never cite them \
+or the cut commits. Each listed commit is marked:
+- "comparison only": in the comparison build, not in the reference;
+- "reference only": in the reference build, not in the comparison (the two \
+builds are on different branches); its effect on the comparison relative to \
+the reference is the reverse of its diff.
+If the request has a "Later changes" list (ref `later`: commits of the \
+current upstream checkout that are in neither build), use those commits only \
+as evidence: a later fix, revert or commit message that bears on this \
+effect, or shows it was already fixed. A later commit is in neither build, \
+so it is never a hypothesis.
 
 Task:
-1. If a revision range is given, check ancestry first (git merge-base \
---is-ancestor).
+1. Check how the two versions relate (git merge-base --is-ancestor \
+reference comparison): if the reference is not an ancestor, commits on both \
+sides are candidates.
 2. Start in MakeMilleFiles.cc: read the tier 1 diffs and decide whether any \
 could produce the observed signature: which detector, layers, staves or \
 chips, which coordinate (local r-phi or z), mean shift vs width change, \
@@ -176,27 +216,37 @@ example a geometry shift to AlignmentTransformation, a width change to the \
 cluster errors, missing or extra clusters to the decoder or clusterizer, \
 DCA or selection to the fit, vertexing and MakeMilleFiles cuts) and read \
 the tier 2 commits in that part. Say which link of the chain you followed.
-4. Check uncommitted changes in the tier 1 and tier 2 paths (git status, \
-git diff -- <paths>): the inputs may come from an uncommitted build.
-5. If no commit or uncommitted change in tier 1 or tier 2 explains the \
+4. Local changes: if the request has a "Local changes" section (edits a \
+build had beyond its commit), treat them as part of that build and check \
+them like commits. Only with a date window (no versions given) also check \
+uncommitted changes in the tier 1 and tier 2 paths (git status, git diff -- \
+<paths>): the inputs may come from an uncommitted build.
+5. If no commit or local change in tier 1 or tier 2 explains the \
 finding, say exactly: "{not_found}" Then list non-code causes to check \
 (alignment parameter file or TRACKINGALIGNMENT tag, masks and bad-channel \
 maps, macro settings) from the known configuration, without searching the \
 code for them.
+6. If later changes are listed, check whether any of them fixes, reverts or \
+describes what you found.
 
 Rules:
 - Cite only commits, files and lines you have actually inspected, and only \
 in tier 1 or tier 2. Never invent a commit hash. Quote short hashes with \
 date and author.
+- In the Hypotheses table use only commits in one build but not the other, \
+or a label's local changes (write "local changes (<label>)" in the commit \
+column).
 - Give file:line references at the commit you inspected.
 - State confidence plainly (high / medium / low) and why.
 
 Answer in Markdown with these sections:
 ### Summary
-### Hypotheses  (table: rank, tier, commit, date, author, files:lines, \
-mechanism, fit to the signature, test to confirm, confidence; or the \
-sentence above when nothing in scope explains the finding)
+### Hypotheses  (table: rank, tier, commit, side, date, author, \
+files:lines, mechanism, fit to the signature, test to confirm, confidence; \
+or the sentence above when nothing in scope explains the finding)
 ### Examined and ruled out  (commits looked at and why they do not fit)
+### Later changes  (later fixes, reverts or messages that bear on the \
+finding, with what they show; "None listed" when the request has none)
 ### Non-code causes to check
 ### Commands run  (the git commands used, so a human can reproduce them)
 """.replace("{not_found}", NOT_FOUND)
@@ -229,8 +279,7 @@ def agent_environment(cwd: Path) -> dict[str, str]:
     config folder that does not exist inside the readable checkout) makes
     the read-only git commands work; the sandbox stays on.
     """
-    return {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
-            "XDG_CONFIG_HOME": str(Path(cwd) / ".stdiag-no-user-config")}
+    return git_environment(cwd)
 
 
 def run_claude(command: list[str], request: str, cwd: Path,
@@ -287,10 +336,21 @@ def find_claude() -> str:
     return claude
 
 
+def explicit_versions(revision: dict) -> bool:
+    return bool(revision.get("from") and revision.get("to"))
+
+
 def revision_arguments(revision: dict) -> list[str]:
-    """git log arguments selecting the commits of a range or date window."""
-    if revision.get("from") and revision.get("to"):
-        return [f"{revision['from']}..{revision['to']}"]
+    """git log arguments selecting the commits of the builds or window.
+
+    Two versions: the symmetric difference from...to (with --left-right,
+    so each commit is marked reference only (<) or comparison only (>)).
+    """
+    if explicit_versions(revision):
+        # In a range clone the cut commits (refs/shared/*) are in both
+        # builds; without their parents git would count them as one side.
+        return ["--left-right", f"{revision['from']}...{revision['to']}",
+                *EXCLUDE_SHARED]
     arguments = [f"--since={revision['since']}"] if revision.get("since") else []
     until = revision.get("until")
     if until and until != "now":
@@ -298,38 +358,81 @@ def revision_arguments(revision: dict) -> list[str]:
     return arguments + ["HEAD"]
 
 
+SIDES = {"<": "reference only", ">": "comparison only"}
+
+
+def logged_commits(repo: Path, selection: list[str],
+                   paths: list[str]) -> list[dict]:
+    """git log records (newest first, no merges) of commits touching paths."""
+    output = subprocess.run(
+        ["git", "-C", str(repo), "log", "--no-merges", "--date=short",
+         "--format=%x1e%m%x1f%h%x1f%ad%x1f%an%x1f%s", "--name-only",
+         *selection, "--", *paths],
+        capture_output=True, text=True, check=True,
+        env=git_environment(repo)).stdout
+    records = []
+    for record in output.split("\x1e")[1:]:
+        header, *files = record.strip("\n").split("\n")
+        mark, short, date, author, subject = header.split("\x1f")
+        in_scope = [name for name in files if name and any(
+            name == path or name.startswith(path + "/") for path in paths)]
+        records.append({"commit": short, "date": date, "author": author,
+                        "subject": subject, "files": in_scope,
+                        "side": SIDES.get(mark)})
+    return records
+
+
 def traced_commits(repo: Path, revision: dict) -> dict[str, list[dict]]:
     """Commits touching each tier's paths (newest first, no merges).
 
-    A commit touching both tiers is listed in tier 1 only.
+    A commit touching both tiers is listed in tier 1 only. With two
+    versions each commit has a side: "reference only" or "comparison only".
     """
     commits: dict[str, list[dict]] = {}
     seen: set[str] = set()
+    selection = revision_arguments(revision)
     for tier, entries in TRACE_SCOPE.items():
         paths = [path for path, _ in entries]
-        output = subprocess.run(
-            ["git", "-C", str(repo), "log", "--no-merges", "--date=short",
-             "--format=%x1e%h%x1f%ad%x1f%an%x1f%s", "--name-only",
-             *revision_arguments(revision), "--", *paths],
-            capture_output=True, text=True, check=True).stdout
         commits[tier] = []
-        for record in output.split("\x1e")[1:]:
-            header, *files = record.strip("\n").split("\n")
-            short, date, author, subject = header.split("\x1f")
-            if short in seen:
+        for item in logged_commits(repo, selection, paths):
+            if item["commit"] in seen:
                 continue
-            seen.add(short)
-            in_scope = [name for name in files if name and any(
-                name == path or name.startswith(path + "/")
-                for path in paths)]
-            commits[tier].append({"commit": short, "date": date,
-                                  "author": author, "subject": subject,
-                                  "files": in_scope})
+            seen.add(item["commit"])
+            if not explicit_versions(revision):
+                item["side"] = None
+            commits[tier].append(item)
     return commits
 
 
+def has_later(repo: Path) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+         "refs/heads/later"], capture_output=True,
+        env=git_environment(repo)).returncode == 0
+
+
+def later_commits(repo: Path, revision: dict) -> list[dict]:
+    """In-scope commits of the ref `later` that are in neither build."""
+    paths = [path for entries in TRACE_SCOPE.values() for path, _ in entries]
+    found = logged_commits(repo, ["later", "--not", revision["from"],
+                                  revision["to"], f"--glob={SHARED_GLOB}"],
+                           paths)
+    for item in found:
+        item["side"] = None
+    return found
+
+
+def commit_line(item: dict) -> str:
+    files = ", ".join(item["files"][:6]) + (
+        f", ... ({len(item['files'])} files)" if len(item["files"]) > 6
+        else "")
+    side = f"[{item['side']}] " if item.get("side") else ""
+    return (f"- {item['commit']} {side}{item['date']} {item['author']}: "
+            f"{item['subject']} [{files}]")
+
+
 def traced_commits_section(repo: Path, revision: dict) -> str:
-    """The scope and its commits, as a request section."""
+    """The scope and its commits (and later changes), as a request section."""
     lines = ["## Scope and commits along the MakeMilleFiles chain",
              "Only these paths are in scope (see the system prompt)."]
     for tier, entries in TRACE_SCOPE.items():
@@ -342,43 +445,127 @@ def traced_commits_section(repo: Path, revision: dict) -> str:
         lines.append(f"\nThe commit list could not be made ({detail.strip()}); "
                      "list the commits in these paths with git log yourself.")
         return "\n".join(lines)
+    where = ("in one build but not the other" if explicit_versions(revision)
+             else "in the date window")
     for tier, found in commits.items():
-        lines.append(f"\n### {tier.capitalize()} commits in the range "
+        lines.append(f"\n### {tier.capitalize()} commits {where} "
                      f"({len(found)}, newest first)")
         if not found:
             lines.append("None.")
-        for item in found[:MAX_LISTED_COMMITS]:
-            files = ", ".join(item["files"][:6]) + (
-                f", ... ({len(item['files'])} files)"
-                if len(item["files"]) > 6 else "")
-            lines.append(f"- {item['commit']} {item['date']} {item['author']}: "
-                         f"{item['subject']} [{files}]")
+        lines += [commit_line(item) for item in found[:MAX_LISTED_COMMITS]]
         if len(found) > MAX_LISTED_COMMITS:
             lines.append(f"- ... {len(found) - MAX_LISTED_COMMITS} older "
                          "commits not listed; use git log on these paths.")
+    if explicit_versions(revision) and has_later(repo):
+        try:
+            later = later_commits(repo, revision)
+        except (subprocess.CalledProcessError, OSError):
+            later = None
+        lines.append("\n### Later changes: in-scope commits of the upstream "
+                     "checkout in neither build (ref `later`; evidence only, "
+                     f"never a hypothesis) ({len(later or [])}, newest first)")
+        if later is None:
+            lines.append("Could not be listed; use git log later --not "
+                         "reference comparison on these paths.")
+        elif not later:
+            lines.append("None.")
+        else:
+            lines += [commit_line(item) for item in later[:MAX_LATER_COMMITS]]
+            if len(later) > MAX_LATER_COMMITS:
+                lines.append(f"- ... {len(later) - MAX_LATER_COMMITS} older "
+                             "later commits not listed.")
     return "\n".join(lines)
+
+
+def in_scope_path(name: str) -> bool:
+    return any(name == path or name.startswith(path + "/")
+               for entries in TRACE_SCOPE.values() for path, _ in entries)
+
+
+def filter_diff(text: str) -> tuple[str, list[str]]:
+    """The in-scope file blocks of a git diff, and the other files' names."""
+    kept, others, block, name = [], [], [], None
+    for line in text.splitlines(keepends=True) + ["diff --git END END\n"]:
+        if line.startswith("diff --git "):
+            if name is not None:
+                (kept.append("".join(block)) if in_scope_path(name)
+                 else others.append(name))
+            parts = line.split()
+            name = parts[-1][2:] if parts[-1].startswith("b/") else parts[-1]
+            block = [line]
+        elif name is not None:
+            block.append(line)
+    return "".join(kept), others
+
+
+def local_diff_section(labels: dict) -> str | None:
+    """Local edits each build had beyond its commit (in-scope parts)."""
+    parts = []
+    for label, row in labels.items():
+        text = (row or {}).get(LOCAL_DIFF_KEY) if isinstance(row, dict) else None
+        if not text:
+            continue
+        kept, others = filter_diff(text)
+        if len(kept) > MAX_LOCAL_DIFF_CHARS:
+            kept = (kept[:MAX_LOCAL_DIFF_CHARS]
+                    + f"\n... cut at {MAX_LOCAL_DIFF_CHARS} characters\n")
+        body = (f"```diff\n{kept}```" if kept
+                else "No changes in tier 1 or tier 2 paths.")
+        if others:
+            body += ("\nAlso changed, out of scope: "
+                     + ", ".join(sorted(others)[:30])
+                     + (" ..." if len(others) > 30 else ""))
+        parts.append(f"### Local changes in {label} (in no commit; part of "
+                     f"the {label} build only)\n{body}")
+    if not parts:
+        return None
+    return "## Local changes\n" + "\n\n".join(parts)
+
+
+def shown_labels(labels: dict) -> dict:
+    """Labels without the local diff path and text (sent separately)."""
+    return {label: ({key: value for key, value in row.items()
+                     if key not in ("local_diff", LOCAL_DIFF_KEY)}
+                    if isinstance(row, dict) else row)
+            for label, row in labels.items()}
 
 
 def build_request(finding: dict, revision: dict, labels: dict,
                   repo: Path = DEFAULT_REPO) -> str:
     sections = [
         "## Finding\n```json\n" + json.dumps(finding, indent=2) + "\n```",
-        "## Revisions to search\n```json\n" + json.dumps(revision, indent=2)
+        "## Versions to compare\n```json\n" + json.dumps(revision, indent=2)
         + "\n```",
         "## Known configuration of the inputs (from labels.csv; empty fields "
-        "are unknown)\n```json\n" + json.dumps(labels, indent=2) + "\n```",
+        "are unknown)\n```json\n" + json.dumps(shown_labels(labels), indent=2)
+        + "\n```",
+        local_diff_section(labels),
         "## Code map\n" + CODE_MAP.read_text(),
         traced_commits_section(repo, revision),
     ]
-    return "\n\n".join(sections)
+    return "\n\n".join(section for section in sections if section)
+
+
+def prepare_repo(source: Path, revision: dict, later: bool = True,
+                 clones_dir: Path | None = None) -> Path:
+    """Where the expert runs: the range clone for two versions, else the
+    checkout itself (date window)."""
+    if not explicit_versions(revision):
+        return source
+    try:
+        return range_clone(source, revision["from"], revision["to"],
+                           clones_dir or paths.CLONES_DIR, later=later)
+    except RangeCloneError as error:
+        sys.exit(f"ERROR: {error}")
 
 
 def claude_command(claude: str, model: str, effort: str,
                    session_id: str | None = None,
-                   resume: bool = False) -> list[str]:
+                   resume: bool = False,
+                   output_format: str = "text") -> list[str]:
     """One-shot when session_id is None; otherwise a dialogue turn."""
     prompt = EXPERT_PROMPT + (DIALOGUE_PROTOCOL if session_id else "")
-    return [claude, "-p", "--output-format", "text", "--model", model,
+    return [claude, "-p", "--output-format", output_format, "--model", model,
             "--effort", effort,
             "--tools", "Read,Grep,Glob,Bash",
             "--allowedTools", *ALLOWED_TOOLS,
@@ -399,16 +586,28 @@ def describe_dry_run(prompt: str, request: str, repo: Path,
 
 def ask_expert(finding: dict, revision: dict, labels: dict,
                repo: Path = DEFAULT_REPO, model: str = DEFAULT_MODEL,
-               effort: str = "high", dry_run: bool = False) -> str:
-    """Return the expert's Markdown answer (or the request, for a dry run)."""
+               effort: str = "high", dry_run: bool = False,
+               usage_out: Path | None = None) -> str:
+    """Return the expert's Markdown answer (or the request, for a dry run).
+
+    With usage_out, the CLI answers in JSON and the served models, token
+    counts, duration and number of turns are written to that file.
+    """
     if not (repo / ".git").exists():
         sys.exit(f"ERROR: {repo} is not a git checkout.")
     request = build_request(finding, revision, labels, repo)
     if dry_run:
         return describe_dry_run(EXPERT_PROMPT, request, repo,
                                 claude_command("claude", model, effort))
-    return run_claude(claude_command(find_claude(), model, effort), request,
-                      repo, "coresoftware expert")
+    if usage_out is None:
+        return run_claude(claude_command(find_claude(), model, effort),
+                          request, repo, "coresoftware expert")
+    text, usage = run_claude_json(
+        claude_command(find_claude(), model, effort, output_format="json"),
+        request, repo, "coresoftware expert")
+    usage_out.write_text(json.dumps(usage | {"effort": effort}, indent=2)
+                         + "\n")
+    return text
 
 
 def expert_turn(text: str, session_id: str, resume: bool,
@@ -435,6 +634,18 @@ def main() -> None:
     parser.add_argument("--effort", default="high",
                         choices=["low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--labels", type=Path,
+                        help="JSON file with the known configuration of the "
+                        "inputs, {label: row}, as review.py reads it from "
+                        "labels.csv (a row's local_diff_text is sent as that "
+                        "build's local changes)")
+    parser.add_argument("--usage-out", type=Path,
+                        help="write served models, tokens and duration here")
+    parser.add_argument("--clones-dir", type=Path,
+                        help="where range clones are cached (default "
+                        "STDIAG_CLONES_DIR or runs/_clones)")
+    parser.add_argument("--no-later", action="store_true",
+                        help="do not show the checkout's later commits")
     args = parser.parse_args()
 
     if not (args.from_rev and args.to_rev) and not args.since:
@@ -443,8 +654,12 @@ def main() -> None:
                 if args.from_rev and args.to_rev else
                 {"since": args.since, "until": args.until or "now"})
     finding = json.loads(args.finding.read_text())
-    print(ask_expert(finding, revision, {}, args.repo, args.model,
-                     args.effort, args.dry_run))
+    labels = json.loads(args.labels.read_text()) if args.labels else {}
+    repo = prepare_repo(args.repo.resolve(), revision, not args.no_later,
+                        args.clones_dir)
+    print(ask_expert(finding, revision, labels, repo, args.model,
+                     args.effort, args.dry_run,
+                     None if args.dry_run else args.usage_out))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ genuinely needed.
 | Eval | Measures | Inputs | Grading | Status |
 |---|---|---|---|---|
 | `triage/` | Does the triage group flags correctly without inventing findings? | Synthetic comparisons with known injected changes, including no-change and distractor cases | Code, from `findings_*.json` against the injected truth | Cases and grading approved (`triage/PROPOSED_CASES.md`, harness `4d598628dc6c`); self-test passes; live run 21/21 pass, 7 key cases repeated with identical findings (2026-11-26) |
-| `coresoftware_expert/` | Does the expert find the commit behind a known effect? | Past coresoftware commits with a known residual effect, described as findings | Code: commit hit in top 1 / top 3; every cited hash checked with git | Planned |
+| `coresoftware_expert/` | Does the expert find the commit behind a known effect, and say so when no code change explains it? | Past coresoftware commits with a known residual effect, written as findings, plus null cases whose cause is not in the code (`cases.json`, local only; `cases.example.json` shows the format); each run in the production range clone (only commits in one build but not the other); later commits hidden by default, shown with `--show-later` | Code, from the Markdown Hypotheses table: commit hit in top 1 / top 3, the not-found sentence for null cases; every cited hash checked with git (exists, in range, in scope) | Harness built, self-test passes; 4 draft cases (one with builds on different branches) awaiting the reviewer; not yet run |
 | `tracking_expert/` | Are its verdicts right, and does it catch wrong physics and citations that don't check out? | Coresoftware-expert answers whose hypotheses have known verdicts (`cases.json`, local only; `cases.example.json` shows the format) | Code, from the JSON verdict block: verdict per hypothesis, code-verified flag, version caveat | 6 cases (18 hypotheses) approved; pilot on 3 cases (2026-11-27): 2/3 pass, every verdict right, the fail caused by git being blocked in the agent (fixed, not yet re-run); see Pilot below |
 | `retrieval/` | Does the literature search find the right paper and page, also in the list the tracking expert's request gets? | Your questions, or findings searched as the agent does, with expected file and page range, plus no-answer questions (`retrieval/cases.json`, git-ignored because it names your papers; `cases.example.json` shows the format) | Code: recall@5, recall@10, MRR, hit@6 (2/paper) for bm25, dense, hybrid; highest cosine of no-answer against answerable cases | Run on 32 approved cases (2026-11-27): questions fine (hybrid hit@6 18/18), agent path weaker in hybrid than in BM25 alone (hit@6 4/8 against 7/8); see Results below |
 | `permissions/` | Do the read-only and no-network limits hold? | Prompts that try to edit files, run forbidden commands or reach the network | End state: checkout unchanged, nothing fetched | Planned |
@@ -137,6 +137,74 @@ of them once (`--variant pilot`).
 - **Not yet run** (paused to save tokens): the two git-dependent cases
   again, to confirm the git fix, then the full run (6 cases × 2,
   roughly 10M input tokens, mostly cached).
+
+## Coresoftware expert eval
+
+```bash
+export STDIAG_CORESOFTWARE=/path/to/coresoftware          # full history
+python evals/coresoftware_expert/run_eval.py --self-test   # grader and git checks, no AI
+python evals/coresoftware_expert/run_eval.py --approve-harness   # reviewer only
+python evals/coresoftware_expert/run_eval.py --cases <id>,<id> --reps 1 --variant pilot
+python evals/coresoftware_expert/run_eval.py --reps 2      # full run
+python evals/coresoftware_expert/run_eval.py --reps 1 --show-later --variant later   # production setting
+python evals/coresoftware_expert/run_eval.py --report      # aggregate results
+```
+
+Each case is a finding as the triage writes it, the two coresoftware
+versions the inputs were built from (`from` = reference, `to` =
+comparison; they may be on different branches) and the known
+configuration of the two inputs (optionally with a build's local edits as
+a diff), with either the commit that caused it (`code` case) or none
+(`null` case: nothing in tier 1 or tier 2 explains it). The coresoftware
+expert runs exactly as in `review.py ask --no-dialogue` (one-shot,
+read-only, same prompt), in the same range clone as in production
+(`stdiag/range_clone.py`): checked out at `to`, holding only the commits
+that are in one build but not the other (`from...to`, each marked
+reference only or comparison only), with shared history cut off.
+
+By default the eval hides the later commits that production shows as
+evidence (fixes, reverts and commit messages after the builds): almost
+every case known from history has a later fix, but a new regression does
+not, so showing them would overstate how well the agent finds a cause
+from the code. `--show-later` runs the production setting; for cases with
+`later_fix_commits` it also scores whether the agent names the fix.
+Clones are cached in `STDIAG_CLONES_DIR` (default `runs/_clones/`),
+shared with production; the source checkout is only read. Inside the
+Claude Code sandbox, which refuses writes to `.git/config` in the
+workspace, pass `--clones-dir` under `$TMPDIR`.
+
+The answer's Markdown Hypotheses table (rank and commit columns) is graded
+by code, and every hash in the answer is checked in the source checkout:
+
+- **pass** (headline): code case, an expected commit in rank 1-3 and no
+  not-found sentence; null case, the exact not-found sentence and no commit
+  cited as a hypothesis;
+- **hit@1, hit@3** (code cases); **format** (table parsed or not-found
+  sentence given);
+- **fabricated** (hashes that are not commits), **out of scope** (cited
+  commits touching no tier 1 or tier 2 path), **outside range** (cited
+  commits in neither or both builds, e.g. a later fix ranked as the
+  cause): reported, not part of pass;
+- **later fix found** (`--show-later` runs, cases with a known later fix):
+  reported, not part of pass;
+- tokens and latency per run.
+
+The cases are the evaluation set and are not published: `cases.json` and
+`PROPOSED_CASES.md` are git-ignored, and this README reports only
+aggregate results. Only cases with `"status": "approved"` are run. The
+self-test checks with git that every expected commit exists, is in one
+build but not the other, touches the code in scope and is not a merge,
+that a later fix is in neither build but in HEAD, and lists the in-scope
+commits of each pair (the distractors) and whether the builds are on
+different branches. The harness checksum covers the runner, grader, case
+loader, the coresoftware expert, the range clone, the code map and the
+local cases file.
+
+Two limits on choosing cases: the MakeMilleFiles `ntp` has the residual
+branches with stave and chip only in recent coresoftware, so every range
+must start after that; and a case's numbers are marked `predicted` (from
+the diff) or `measured` (from a real pair of productions). With few cases,
+only large differences between variants are meaningful.
 
 ## Retrieval eval
 

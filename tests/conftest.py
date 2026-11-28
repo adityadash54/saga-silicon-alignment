@@ -12,6 +12,16 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def scratch_clones_dir(tmp_path, monkeypatch):
+    """Range clones go to a temporary folder, never to runs/_clones."""
+    from stdiag import paths
+    clones = tmp_path / "range_clones"
+    monkeypatch.setattr(paths, "CLONES_DIR", clones)
+    monkeypatch.setenv("STDIAG_CLONES_DIR", str(clones))
+    return clones
+
+
 def run_module(module: str, *args: str, cwd: Path | None = None,
                env: dict[str, str] | None = None,
                check: bool = True) -> subprocess.CompletedProcess | str:

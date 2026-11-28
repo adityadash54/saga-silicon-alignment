@@ -12,9 +12,10 @@ review_<A>_vs_<B>.md (human-readable), next to the findings file.
 Commands:
   python -m stdiag.review list   findings_Iter0_vs_Iter1.json
   python -m stdiag.review show   findings_Iter0_vs_Iter1.json F3
-  python -m stdiag.review ask    findings_Iter0_vs_Iter1.json F3 [--since 2026-06-01]
+  python -m stdiag.review ask    findings_Iter0_vs_Iter1.json F3
                           [--from REV --to REV] [--labels labels.csv]
-                          [--no-dialogue] [--dry-run]
+                          [--no-later] [--no-dialogue] [--dry-run]
+                          [--since 2026-06-01]   (fallback, no versions)
   python -m stdiag.review continue findings_Iter0_vs_Iter1.json F3 [--note "..."]
   python -m stdiag.review check  findings_Iter0_vs_Iter1.json F3 [--answer FILE] [--dry-run]
   python -m stdiag.review decide findings_Iter0_vs_Iter1.json F3 accept|reject|needs-info
@@ -26,11 +27,18 @@ they converge, when one needs information from you, or at the limit;
 `continue` sends your note to both and, after the limit, allows another
 round. `--no-dialogue` gives a single coresoftware expert answer instead.
 
-Revision range for `ask`: --from/--to if given; otherwise the
-coresoftware_commit of both labels in labels.csv; otherwise the --since
-(and optional --until) date window. `check` reviews the latest answer or
-dialogue transcript for the finding unless --answer is given. Only `ask`,
-`continue` and `check` contact Anthropic, and only without --dry-run.
+Versions for `ask`: --from/--to if given; otherwise the
+coresoftware_commit of both labels in labels.csv; otherwise, as a fallback,
+the --since (and optional --until) date window. With two versions the
+experts run in a range clone (stdiag/range_clone.py, cached in
+STDIAG_CLONES_DIR): checked out at the comparison version, holding only the
+commits in one build but not the other, plus (unless --no-later) the
+checkout's later commits as evidence of fixes. A label's local_diff in
+labels.csv (a `git diff` of local edits the build had) is sent to the
+coresoftware expert. `check` reviews the latest answer or dialogue
+transcript for the finding unless --answer is given, in the clone that
+answer was written in. Only `ask`, `continue` and `check` contact
+Anthropic, and only without --dry-run.
 """
 
 from __future__ import annotations
@@ -47,7 +55,10 @@ from pathlib import Path
 import pandas as pd
 
 from stdiag import expert_dialogue
-from stdiag.coresoftware_expert import DEFAULT_MODEL, DEFAULT_REPO, ask_expert
+from stdiag.coresoftware_expert import (DEFAULT_MODEL, DEFAULT_REPO,
+                                        LOCAL_DIFF_KEY, ask_expert,
+                                        prepare_repo)
+from stdiag.range_clone import git_environment
 from stdiag.tracking_expert import check_answer
 
 DIALOGUE_STATUS_TEXT = {
@@ -176,17 +187,35 @@ def append_event(findings_path: Path, findings: dict, event: dict) -> None:
 
 
 def read_labels(labels_path: Path, wanted: list[str]) -> dict:
+    """Rows of labels.csv for the wanted labels.
+
+    A row's local_diff (path to a `git diff` of local edits the build had
+    beyond its commit, relative to labels.csv) is read into
+    row["local_diff_text"], which the coresoftware expert receives.
+    """
     if not labels_path.exists():
         return {label: {} for label in wanted}
     with labels_path.open(newline="") as handle:
         rows = {row["label"]: row for row in csv.DictReader(handle)}
-    return {label: rows.get(label, {}) for label in wanted}
+    labels = {label: dict(rows.get(label, {})) for label in wanted}
+    for label, row in labels.items():
+        diff_path = (row.get("local_diff") or "").strip()
+        if not diff_path:
+            continue
+        path = Path(diff_path).expanduser()
+        if not path.is_absolute():
+            path = labels_path.parent / path
+        if not path.is_file():
+            sys.exit(f"ERROR: local_diff of '{label}' in {labels_path} "
+                     f"not found: {path}")
+        row[LOCAL_DIFF_KEY] = path.read_text(errors="replace")
+    return labels
 
 
 def verify_revision(repo: Path, revision: str) -> str:
     result = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"],
-        cwd=repo, capture_output=True, text=True)
+        cwd=repo, capture_output=True, text=True, env=git_environment(repo))
     if result.returncode != 0:
         sys.exit(f"ERROR: '{revision}' is not a commit in {repo}.")
     return result.stdout.strip()[:12]
@@ -259,6 +288,10 @@ def command_ask(args) -> None:
     comparison = findings["comparison"]["label"]
     labels = read_labels(args.labels, [reference, comparison])
     revision = resolve_revision(args, labels, reference, comparison)
+    # Two versions: a clone with only what differs between the builds (and,
+    # unless --no-later, the checkout's later commits); else the checkout.
+    repo = prepare_repo(args.repo, revision, not args.no_later,
+                        args.clones_dir)
 
     request = {
         "comparison": f"{comparison} (comparison) vs {reference} (reference)",
@@ -268,17 +301,17 @@ def command_ask(args) -> None:
     if not args.no_dialogue:
         if args.dry_run:
             print(expert_dialogue.dry_run_text(request, revision, labels,
-                                               args.repo, args.model,
+                                               repo, args.model,
                                                args.effort))
             return
         base_path = new_output_base(args.findings, "dialogue", finding["id"])
         state, state_path = expert_dialogue.start_dialogue(
-            request, revision, labels, base_path, args.repo, args.model,
+            request, revision, labels, base_path, repo, args.model,
             args.effort)
         log_dialogue(args, findings, finding, state, state_path)
         return
 
-    answer = ask_expert(request, revision, labels, args.repo, args.model,
+    answer = ask_expert(request, revision, labels, repo, args.model,
                         args.effort, args.dry_run)
     if args.dry_run:
         print(answer)
@@ -290,13 +323,13 @@ def command_ask(args) -> None:
         f"# coresoftware expert: {finding['id']} "
         f"({comparison} vs {reference})\n\n"
         f"Generated {now_utc()} with {args.model} via Claude Code CLI, "
-        f"read-only in {args.repo.name}. Revisions: {json.dumps(revision)}. "
+        f"read-only in {repo}. Revisions: {json.dumps(revision)}. "
         "AI-generated hypotheses; verify the cited commits before acting.\n\n"
         + answer + "\n")
     append_event(args.findings, findings, {
         "type": "ask", "finding": finding["id"], "time": now_utc(),
         "reviewer": args.reviewer, "revision": json.dumps(revision),
-        "answer_file": answer_path.name})
+        "repo": str(repo), "answer_file": answer_path.name})
     print(f"Wrote {answer_path}")
 
 
@@ -333,6 +366,16 @@ def command_continue(args) -> None:
     log_dialogue(args, findings, finding, state, state_path, continued=True)
 
 
+def recorded_repo(findings_path: Path, event: dict) -> Path | None:
+    """The checkout an ask or dialogue event ran in, if it still exists."""
+    repo = event.get("repo")
+    if not repo and event.get("state_file"):
+        state_path = findings_path.with_name(event["state_file"])
+        if state_path.exists():
+            repo = json.loads(state_path.read_text()).get("repo")
+    return Path(repo) if repo and (Path(repo) / ".git").exists() else None
+
+
 def command_check(args) -> None:
     findings = load_findings(args.findings)
     finding = find(findings, args.finding_id)
@@ -349,8 +392,12 @@ def command_check(args) -> None:
         latest = answers[-1]
         answer_path = args.findings.with_name(
             latest.get("answer_file") or latest["transcript_file"])
+        recorded = recorded_repo(args.findings, latest)
     if not answer_path.exists():
         sys.exit(f"ERROR: answer file {answer_path} not found.")
+    # The checkout the answer was written in (the range clone), unless
+    # --repo is given or the answer was passed with --answer.
+    repo = args.repo or (None if args.answer else recorded) or DEFAULT_REPO
 
     request = {
         "comparison": f"{findings['comparison']['label']} (comparison) vs "
@@ -358,7 +405,7 @@ def command_check(args) -> None:
         "finding": finding,
         "flags_table_rows": flagged_rows(args.findings, findings, finding),
     }
-    review = check_answer(request, answer_path.read_text(), args.repo,
+    review = check_answer(request, answer_path.read_text(), repo,
                           args.model, args.effort, args.dry_run)
     if args.dry_run:
         print(review)
@@ -420,6 +467,12 @@ def main() -> None:
     ask_parser.add_argument("--effort", default="high",
                             choices=["low", "medium", "high", "xhigh", "max"])
     ask_parser.add_argument("--dry-run", action="store_true")
+    ask_parser.add_argument("--clones-dir", type=Path,
+                            help="where range clones are cached (default "
+                                 "STDIAG_CLONES_DIR or runs/_clones)")
+    ask_parser.add_argument("--no-later", action="store_true",
+                            help="do not show the checkout's commits made "
+                                 "after the two versions")
     ask_parser.add_argument("--no-dialogue", action="store_true",
                             help="single coresoftware expert answer, no "
                                  "dialogue with the tracking expert")
@@ -438,7 +491,10 @@ def main() -> None:
     check_parser.add_argument("finding_id")
     check_parser.add_argument("--answer", type=Path,
                               help="expert answer to check (default: latest)")
-    check_parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
+    check_parser.add_argument("--repo", type=Path,
+                              help="checkout to check in (default: the one "
+                                   "the answer was written in, else "
+                                   "STDIAG_CORESOFTWARE)")
     check_parser.add_argument("--model", default=DEFAULT_MODEL)
     check_parser.add_argument("--effort", default="high",
                               choices=["low", "medium", "high", "xhigh", "max"])

@@ -31,6 +31,10 @@ tracking_docs/
 # evaluation set (evals/tracking_expert/cases.example.json shows the format)
 /evals/tracking_expert/cases.json
 /evals/tracking_expert/PROPOSED_CASES.md
+# Coresoftware expert test cases and their proposal: same reason
+# (evals/coresoftware_expert/cases.example.json shows the format)
+/evals/coresoftware_expert/cases.json
+/evals/coresoftware_expert/PROPOSED_CASES.md
 
 # Local Claude Code settings (personal permissions)
 .claude/settings.local.json

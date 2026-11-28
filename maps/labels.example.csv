@@ -1,4 +1,4 @@
-label,coresoftware_commit,cdb_tag,alignment_file,macro_version,notes
-Iter0,,,,,
-Iter1,,,,,
-Iter2,,,,,
+label,coresoftware_commit,cdb_tag,alignment_file,macro_version,local_diff,notes
+Iter0,,,,,,
+Iter1,,,,,,
+Iter2,,,,,,

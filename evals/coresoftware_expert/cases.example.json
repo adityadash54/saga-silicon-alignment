@@ -1,0 +1,49 @@
+{
+  "coresoftware_revision": "0000000000000000000000000000000000000000",
+  "cases": [
+    {
+      "id": "example-code-width",
+      "status": "draft",
+      "kind": "code",
+      "signature": "predicted",
+      "request": {
+        "comparison": "Example-B (comparison) vs Example-A (reference)",
+        "finding": {
+          "id": "F1",
+          "group": "D",
+          "title": "Example: local r-phi width change on all INTT layers",
+          "evidence": "Example numbers only: fitted sigma 10% narrower on every INTT ladder, means unchanged.",
+          "entries": [{"detector": "INTT", "layer": -1, "stave": -1, "chip": -1, "coord": "rphi"}]
+        },
+        "flags_table_rows": []
+      },
+      "revision": {"from": "1111111111111111111111111111111111111111",
+                   "to": "2222222222222222222222222222222222222222"},
+      "labels": {},
+      "expected_commits": ["3333333333333333333333333333333333333333"],
+      "why": "Example: the reviewer's reasoning for why this commit produces the signature goes here."
+    },
+    {
+      "id": "example-null-parameters",
+      "status": "draft",
+      "kind": "null",
+      "signature": "predicted",
+      "request": {
+        "comparison": "Example-D (comparison) vs Example-C (reference)",
+        "finding": {
+          "id": "F1",
+          "group": "A",
+          "title": "Example: stave-wide local z mean shift",
+          "evidence": "Example numbers only: mean shift -12 um on all chips of one stave.",
+          "entries": [{"detector": "MVTX", "layer": 2, "stave": 7, "chip": -1, "coord": "z"}]
+        },
+        "flags_table_rows": []
+      },
+      "revision": {"from": "4444444444444444444444444444444444444444",
+                   "to": "5555555555555555555555555555555555555555"},
+      "labels": {},
+      "expected_commits": [],
+      "why": "Example: no in-scope commit in the range can move one stave; the inputs used different alignment parameter files."
+    }
+  ]
+}

@@ -12,6 +12,9 @@ STDIAG_MILLEPEDE_REPO local clone of the Millepede-II repository, from
 STDIAG_RUNS_DIR      where compare_runs creates one folder per comparison,
                       runs/<a>_vs_<b> (default: runs/ in this repository,
                       git-ignored)
+STDIAG_CLONES_DIR    where the coresoftware expert's range clones are cached
+                      (one per pair of versions; default runs/_clones in
+                      this repository, git-ignored)
 STDIAG_LITERATURE_DIR alignment papers and talks (PDFs) indexed by
                       `stdiag-literature index` (default:
                       docs/TrackingLiterature/ in this repository, git-ignored)
@@ -38,6 +41,8 @@ MILLEPEDE_REPO = Path(os.environ.get(
     "STDIAG_MILLEPEDE_REPO",
     REPO_ROOT / "docs" / "Millepede" / "millepede-ii")).resolve()
 RUNS_DIR = Path(os.environ.get("STDIAG_RUNS_DIR", REPO_ROOT / "runs")).resolve()
+CLONES_DIR = Path(os.environ.get(
+    "STDIAG_CLONES_DIR", REPO_ROOT / "runs" / "_clones")).resolve()
 LITERATURE_DIR = Path(os.environ.get(
     "STDIAG_LITERATURE_DIR", REPO_ROOT / "docs" / "TrackingLiterature")).resolve()
 LITERATURE_INDEX = Path(os.environ.get(
